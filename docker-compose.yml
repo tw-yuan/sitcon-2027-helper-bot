@@ -1,0 +1,28 @@
+# 小石 — 單機部署（NFR-2/NFR-9）
+# 一鍵啟動：docker compose up -d
+services:
+  bot:
+    build: .
+    image: sitcon-bot:latest
+    container_name: sitcon-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 容器內固定路徑，覆蓋 .env 中可能的相對值
+      GOOGLE_SA_JSON_PATH: /run/secrets/google-sa.json
+      DB_PATH: /data/sitcon_bot.sqlite3
+    volumes:
+      # 持久化：SQLite（授權清單、稽核）——重啟不失效（NFR-2）
+      - ./data:/data
+      # 設定檔（會議模板）與職掌文件 role.md——可熱改，/reload 生效
+      - ./config:/app/config:ro
+      - ./role.md:/app/role.md:ro
+      # Google service account 金鑰（唯讀掛載，不進 image）
+      - ./secrets/google-sa.json:/run/secrets/google-sa.json:ro
+    # long polling，不需對外開 port（禁用 webhook — 禁止事項 #9）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

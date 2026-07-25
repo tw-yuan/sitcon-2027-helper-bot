@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# 測試與工具快取
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 環境與 secrets（絕不進 repo — NFR-3）
+.env
+*.env
+!.env.example
+secrets/
+*.sa.json
+google-sa*.json
+
+# 持久化資料（volume）
+data/*
+!data/.gitkeep
+
+# 職掌文件由客戶後補；若含敏感內容不進 repo（保留範例）
+# config/team_charter.md
+
+# 編輯器
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,72 @@
+[project]
+name = "sitcon-bot"
+version = "0.1.0"
+description = "小石 — SITCON 2027 工作人員 AI 助理 Telegram Bot"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    # Telegram（async long polling、forum topics）
+    "python-telegram-bot>=21,<22",
+    # GitLab REST v4
+    "python-gitlab>=4,<5",
+    # Google Drive v3 + Sheets v4（service account）
+    "google-api-python-client>=2.130",
+    "google-auth>=2.30",
+    # HackMD 直接以 httpx 呼叫 REST
+    "httpx>=0.27",
+    # LLM providers（包在自製 LLMClient 介面後）
+    "anthropic>=0.40",
+    "openai>=1.50",
+    # 儲存
+    "aiosqlite>=0.20",
+    # 設定與驗證
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[project.scripts]
+sitcon-bot = "sitcon_bot.__main__:main"
+
+# 開發相依（PEP 735）：`uv sync` 預設安裝，`uv sync --no-dev` 略過（Dockerfile 用）
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "pyyaml>=6.0",       # golden test set 資料格式
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sitcon_bot"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = [
+    "RUF001", # 全形標點在中文字串中屬正常
+    "RUF002",
+    "RUF003",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "golden: 實打 LLM API 的 golden test（預設不跑，需 --run-golden）",
+    "security: SPEC 16.3 安全測試",
+]
+
+[tool.uv]
+# `uv sync` 預設安裝 dev 群組；`uv sync --no-dev`（Dockerfile）略過
+default-groups = ["dev"]

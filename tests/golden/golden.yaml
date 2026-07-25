@@ -1,0 +1,217 @@
+# Golden test set（AGENTS 7.3）。每條標注預期的第一個工具呼叫與關鍵參數子集。
+# runner 實打 LLM（需 --run-golden 與憑證），逐條比對工具名＋參數子集，輸出通過率。
+# args_subset 運算子：<field>_one_of / <field>_contains / <field>_present，其餘為精確比對。
+# tool 可為單一字串或清單（命中其一即可）。
+
+# --- 開卡：明確自動分派 ---
+- id: g-001
+  input: "小石 幫我開一張卡：官網首頁的倒數計時器壞了"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      title_present: true
+      team_one_of: ["開發", "開發組"]
+
+- id: g-002
+  input: "小石 幫我開張卡 官網贊助頁的 logo 都糊掉了"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      team_one_of: ["設計", "設計組", "開發", "開發組", "行銷", "行銷組"]
+
+- id: g-003
+  input: "小石 開一張卡：想辦一個給講者的歡迎晚宴，需要有人規劃"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      title_present: true
+
+# --- 開卡：指定細節（不自動判斷組別） ---
+- id: g-004
+  input: "小石 開一張卡給行政組，標題場地保證金匯款，due 8/15"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      team_one_of: ["行政", "行政組"]
+
+- id: g-005
+  input: "小石 開卡：紀錄組要準備一籌的簡報，下週五前"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      team_one_of: ["紀錄", "紀錄組"]
+
+# --- 開卡：指定 assignee（先解析人名） ---
+- id: g-006
+  input: "小石 開一張卡，標題場勘，assign 給 Yuan 跟 Leaf"
+  expect:
+    tool: ["resolve_person", "gitlab_create_issue"]
+
+- id: g-007
+  input: "小石 這張卡指派給 Amy 處理"
+  expect:
+    tool: ["resolve_person", "gitlab_search_issues", "ask_user"]
+
+# --- 編輯：#IID ---
+- id: g-008
+  input: "小石 把 #42 的狀態改成 Doing"
+  expect:
+    tool: gitlab_update_issue
+    args_subset:
+      iid: 42
+
+- id: g-009
+  input: "小石 把 #42 加上 0913 一籌"
+  expect:
+    tool: gitlab_update_issue
+    args_subset:
+      iid: 42
+
+- id: g-010
+  input: "小石 #57 的 due 改成下週三"
+  expect:
+    tool: gitlab_update_issue
+    args_subset:
+      iid: 57
+
+# --- 編輯：標題模糊（先查再改） ---
+- id: g-011
+  input: "小石 把倒數計時器那張卡改成 Review"
+  expect:
+    tool: ["gitlab_search_issues", "gitlab_update_issue"]
+
+# --- 留言 ---
+- id: g-012
+  input: "小石 在 #42 留言：場地已確認，等發票"
+  expect:
+    tool: gitlab_comment_issue
+    args_subset:
+      iid: 42
+      body_present: true
+
+# --- 摘要留言 ---
+- id: g-013
+  input: "小石 #42 底下討論到哪了"
+  expect:
+    tool: gitlab_get_issue
+    args_subset:
+      iid: 42
+
+# --- 條件查詢：開著 ---
+- id: g-014
+  input: "小石 列出行政組還開著的卡"
+  expect:
+    tool: gitlab_search_issues
+    args_subset:
+      open_only: true
+      label_filters_contains: ["Team::行政組"]
+
+- id: g-015
+  input: "小石 開發組有哪些卡還沒處理"
+  expect:
+    tool: gitlab_search_issues
+    args_subset:
+      label_filters_contains: ["Team::開發組"]
+
+# --- 連結速查（標題模糊→查詢） ---
+- id: g-016
+  input: "小石 給我倒數計時器那張卡的連結"
+  expect:
+    tool: gitlab_search_issues
+    args_subset:
+      title_query_present: true
+
+# --- Drive 搜尋 ---
+- id: g-017
+  input: "小石 幫我找去年的場地租借合約"
+  expect:
+    tool: drive_search
+    args_subset:
+      keywords_present: true
+      scope_contains: ["SITCON 2026"]
+
+- id: g-018
+  input: "小石 找一下贊助商的回覆信整理"
+  expect:
+    tool: drive_search
+    args_subset:
+      keywords_present: true
+
+# --- HackMD：大籌會議記錄 ---
+- id: g-019
+  input: "小石 開一份 0913 一籌的會議記錄"
+  expect:
+    tool: hackmd_create_note
+    args_subset:
+      kind: summit
+      meeting_name_one_of: ["一籌"]
+
+- id: g-020
+  input: "小石 開今天站立會議的記錄"
+  expect:
+    tool: hackmd_create_note
+    args_subset:
+      kind: summit
+
+# --- HackMD：組會記錄 ---
+- id: g-021
+  input: "小石 幫行政組開今天的會議記錄"
+  expect:
+    tool: hackmd_create_note
+    args_subset:
+      kind: team_meeting
+      team_one_of: ["行政", "行政組"]
+
+# --- HackMD：一般筆記 ---
+- id: g-022
+  input: "小石 幫開發組開一份筆記：報名系統的架構討論"
+  expect:
+    tool: hackmd_create_note
+    args_subset:
+      kind: general
+      team_one_of: ["開發", "開發組"]
+
+# --- HackMD：搜尋 ---
+- id: g-023
+  input: "小石 找上次討論贊助方案的那份文件"
+  expect:
+    tool: hackmd_search_notes
+    args_subset:
+      title_keywords_present: true
+
+# --- HackMD：編輯（先定位） ---
+- id: g-024
+  input: "小石 在 0913 一籌的記錄最後加上：散會時間 22:10"
+  expect:
+    tool: ["hackmd_search_notes", "hackmd_update_note", "hackmd_get_note"]
+
+# --- 相對籌會日期 ---
+- id: g-025
+  input: "小石 開一張卡給編輯組：手冊校稿，下次籌會前完成"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      team_one_of: ["編輯", "編輯組"]
+
+# --- 英文指令 ---
+- id: g-026
+  input: "@bot create an issue: the sponsor page logo is blurry"
+  expect:
+    tool: gitlab_create_issue
+    args_subset:
+      title_present: true
+
+- id: g-027
+  input: "小石 list all opened cards for the design team"
+  expect:
+    tool: gitlab_search_issues
+    args_subset:
+      open_only: true
+
+# --- 人名解析 ---
+- id: g-028
+  input: "小石 Leaf 的 GitLab 帳號是什麼"
+  expect:
+    tool: resolve_person
+    args_subset:
+      query_present: true
