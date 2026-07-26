@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .google_http import GOOGLE_NUM_RETRIES
+from .google_http import GOOGLE_NUM_RETRIES, build_google_service, request_http
 
 log = logging.getLogger(__name__)
 
@@ -176,15 +176,11 @@ class GoogleDriveGateway:
     def __init__(self, sa_json_path: str) -> None:
         self._sa_json_path = sa_json_path
         self._service: Any = None
-
-    def _build_service(self) -> Any:
-        from .google_http import build_google_service
-
-        return build_google_service("drive", "v3", self._sa_json_path, [DRIVE_SCOPE])
+        self._creds: Any = None
 
     def _service_or_build(self) -> Any:
         if self._service is None:
-            self._service = self._build_service()
+            self._service, self._creds = build_google_service("drive", "v3", self._sa_json_path, [DRIVE_SCOPE])
         return self._service
 
     def _search_sync(self, query: str) -> list[dict[str, Any]]:
@@ -203,7 +199,7 @@ class GoogleDriveGateway:
                     pageSize=100,
                     pageToken=page_token,
                 )
-                .execute(num_retries=GOOGLE_NUM_RETRIES)
+                .execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
             )
             items.extend(resp.get("files", []))
             page_token = resp.get("nextPageToken")
@@ -219,7 +215,7 @@ class GoogleDriveGateway:
             return (
                 service.files()
                 .get(fileId=folder_id, supportsAllDrives=True, fields="id,name,parents")
-                .execute(num_retries=GOOGLE_NUM_RETRIES)
+                .execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
             )
         except HttpError as exc:
             if getattr(exc, "status_code", None) in (403, 404):

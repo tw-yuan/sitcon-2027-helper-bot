@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
-from .google_http import GOOGLE_NUM_RETRIES
+from .google_http import GOOGLE_NUM_RETRIES, build_google_service, request_http
 
 log = logging.getLogger(__name__)
 
@@ -267,20 +267,16 @@ class GoogleSheetsFetcher:
         self._sheet_id = sheet_id
         self._gid = gid
         self._service: object | None = None
-
-    def _build_service(self) -> object:
-        from .google_http import build_google_service
-
-        return build_google_service("sheets", "v4", self._sa_json_path, [SHEETS_SCOPE])
+        self._creds: object | None = None
 
     def _fetch_sync(self) -> tuple[str, list[str], list[list[str]]]:
         if self._service is None:
-            self._service = self._build_service()
+            self._service, self._creds = build_google_service("sheets", "v4", self._sa_json_path, [SHEETS_SCOPE])
         service = self._service
         meta = (
             service.spreadsheets()  # type: ignore[attr-defined]
             .get(spreadsheetId=self._sheet_id, fields="sheets(properties(sheetId,title))")
-            .execute(num_retries=GOOGLE_NUM_RETRIES)
+            .execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
         )
         title = None
         for s in meta.get("sheets", []):
@@ -293,7 +289,7 @@ class GoogleSheetsFetcher:
             service.spreadsheets()  # type: ignore[attr-defined]
             .values()
             .get(spreadsheetId=self._sheet_id, range=f"'{title}'!A:Z")
-            .execute(num_retries=GOOGLE_NUM_RETRIES)
+            .execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
         )
         values: list[list[str]] = resp.get("values", [])
         header = values[0] if values else []
