@@ -206,13 +206,13 @@ class LabelIndex:
 # --------------------------------------------------------------------------- #
 # attribution（GL-8）
 # --------------------------------------------------------------------------- #
-def attribution_line(username: str | None, user_id: int) -> str:
-    handle = f"@{username}" if username else "@?"
-    return f"> _via 小石 · requested by {handle} ({user_id})_"
+def attribution_line(requester: str) -> str:
+    """GL-8 來源列。requester 由呼叫端（工具層）解析成 GitLab 身分字串（如 @gitlab_username）。"""
+    return f"> _via 小石 · requested by {requester}_"
 
 
-def with_attribution(text: str | None, username: str | None, user_id: int) -> str:
-    line = attribution_line(username, user_id)
+def with_attribution(text: str | None, requester: str) -> str:
+    line = attribution_line(requester)
     body = (text or "").rstrip()
     return f"{body}\n\n{line}" if body else line
 
@@ -293,13 +293,12 @@ class GitLabClient:
         label_names: list[str],
         assignee_ids: list[int],
         due_date: str | None,
-        requester_username: str | None,
-        requester_user_id: int,
+        requester: str,
     ) -> CreateResult:
         index = await self.get_label_index()
         canonical = self._validate(index, label_names)
         final_labels = merge_labels([], canonical, [])
-        desc = with_attribution(description, requester_username, requester_user_id)  # GL-8
+        desc = with_attribution(description, requester)  # GL-8
 
         payload: dict[str, Any] = {
             "title": title,
@@ -335,8 +334,7 @@ class GitLabClient:
         set_assignee_ids: list[int] | None = None,
         due_date: str | None = None,
         clear_due_date: bool = False,
-        requester_username: str | None = None,
-        requester_user_id: int | None = None,
+        requester: str | None = None,
     ) -> UpdateResult:
         """編輯卡片（GL-14）。labels 以最終集合覆寫（GL-13）；不觸碰 state（GL-16）。
 
@@ -348,10 +346,7 @@ class GitLabClient:
         if title is not None and title != before.title:
             payload["title"] = title
         if description is not None:
-            if requester_user_id is not None:
-                payload["description"] = with_attribution(description, requester_username, requester_user_id)
-            else:
-                payload["description"] = description
+            payload["description"] = with_attribution(description, requester) if requester else description
 
         add_canon: list[str] = []
         if add_labels or remove_labels:
@@ -410,10 +405,8 @@ class GitLabClient:
         )
 
     # -------------------------- 留言 -------------------------- #
-    async def comment_issue(
-        self, iid: int, body: str, *, requester_username: str | None, requester_user_id: int
-    ) -> Note:
-        text = with_attribution(body, requester_username, requester_user_id)  # GL-18 → GL-8 來源列
+    async def comment_issue(self, iid: int, body: str, *, requester: str) -> Note:
+        text = with_attribution(body, requester)  # GL-18 → GL-8 來源列
         raw = await self._call(self._b.create_issue_note, iid, text)
         return Note.from_raw(raw)
 

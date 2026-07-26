@@ -40,6 +40,21 @@ async def _safe_roster(service: RosterService | None) -> Roster | None:
         return None
 
 
+def _requester_handle(roster: Roster | None, ctx: ToolContext) -> str:
+    """把發話者解析成 GitLab 身分字串供 attribution（GL-8）。
+
+    以名冊 telegram_id 反查 gitlab_username → 「@gitlab_username」（GitLab mention）；名冊查無 GitLab
+    身分時退回標明「（Telegram）」的帳號，避免在 GitLab 上被誤認為 GitLab 使用者。
+    """
+    if roster is not None:
+        member = roster.by_telegram_id(ctx.user_id)
+        if member is not None and member.gitlab_username:
+            return f"@{member.gitlab_username}"
+    if ctx.username:
+        return f"@{ctx.username}（Telegram）"
+    return f"Telegram user {ctx.user_id}"
+
+
 def _label_error(exc: LabelNotFoundError) -> str:
     cands = "、".join(exc.candidates) if exc.candidates else "（無相近候選）"
     return f"找不到 label「{exc.requested}」，此次未執行。最接近的既有 label：{cands}。請改用正確的 label。"
@@ -111,8 +126,7 @@ class GitlabCreateIssueTool(_GitLabToolBase):
                 label_names=labels,
                 assignee_ids=assignees,
                 due_date=args.due_date,
-                requester_username=ctx.username,
-                requester_user_id=ctx.user_id,
+                requester=_requester_handle(roster, ctx),
             )
         except LabelNotFoundError as exc:
             return _label_error(exc)
@@ -158,6 +172,7 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
         assert isinstance(args, UpdateIssueArgs)
+        roster = await _safe_roster(self._roster)
         try:
             res = await self._gl.update_issue(
                 args.iid,
@@ -168,8 +183,7 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
                 set_assignee_ids=args.set_assignee_ids,
                 due_date=args.due_date,
                 clear_due_date=args.clear_due_date,
-                requester_username=ctx.username,
-                requester_user_id=ctx.user_id,
+                requester=_requester_handle(roster, ctx),
             )
         except LabelNotFoundError as exc:
             return _label_error(exc)
@@ -224,9 +238,10 @@ class GitlabCommentIssueTool(_GitLabToolBase):
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
         assert isinstance(args, CommentIssueArgs)
+        roster = await _safe_roster(self._roster)
         try:
             await self._gl.comment_issue(
-                args.iid, args.body, requester_username=ctx.username, requester_user_id=ctx.user_id
+                args.iid, args.body, requester=_requester_handle(roster, ctx)
             )
         except GitLabError as exc:
             return f"留言失敗：{exc}"

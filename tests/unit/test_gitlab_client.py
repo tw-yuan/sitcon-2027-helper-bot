@@ -174,7 +174,7 @@ async def test_create_rejects_unknown_label_with_candidates() -> None:
     with pytest.raises(LabelNotFoundError) as ei:
         await c.create_issue(
             title="t", description="d", label_names=["Status::Inboxx"],
-            assignee_ids=[], due_date=None, requester_username="yuan", requester_user_id=1,
+            assignee_ids=[], due_date=None, requester="@yuan",
         )
     assert "Status::Inbox" in ei.value.candidates
 
@@ -183,7 +183,7 @@ async def test_create_resolves_label_normalization() -> None:
     b = FakeBackend(LABELS)
     res = await _client(b).create_issue(
         title="t", description="d", label_names=["status::inbox"],  # 大小寫不同
-        assignee_ids=[], due_date=None, requester_username="yuan", requester_user_id=1,
+        assignee_ids=[], due_date=None, requester="@yuan",
     )
     assert "Status::Inbox" in res.issue.labels
 
@@ -200,16 +200,16 @@ async def test_create_appends_attribution() -> None:
     b = FakeBackend(LABELS)
     await _client(b).create_issue(
         title="t", description="場地保證金", label_names=["Status::Inbox"],
-        assignee_ids=[], due_date=None, requester_username="yuan", requester_user_id=42,
+        assignee_ids=[], due_date=None, requester="@yuan",
     )
-    assert "requested by @yuan (42)" in b.last_create_payload["description"]
+    assert "requested by @yuan" in b.last_create_payload["description"]
 
 
 async def test_comment_appends_attribution_and_filters_system() -> None:
     b = FakeBackend(LABELS)
     c = _client(b)
-    note = await c.comment_issue(50, "場地已確認", requester_username="leaf", requester_user_id=7)
-    assert "requested by @leaf (7)" in note.body
+    note = await c.comment_issue(50, "場地已確認", requester="@leaf")
+    assert "requested by @leaf" in note.body
 
     b.notes[50] = [
         {"id": 1, "body": "changed status to Doing", "system": True, "author": {"username": "gitlab"}},
@@ -227,7 +227,7 @@ async def test_multi_assignee_discrepancy_detected() -> None:
     b.applied_assignees = [1, 2]  # API 只套用 1、2
     res = await _client(b).create_issue(
         title="t", description="d", label_names=["Status::Inbox"],
-        assignee_ids=[1, 2, 3], due_date=None, requester_username="yuan", requester_user_id=1,
+        assignee_ids=[1, 2, 3], due_date=None, requester="@yuan",
     )
     assert res.missing_assignees == [3]
 

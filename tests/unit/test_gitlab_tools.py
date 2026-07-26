@@ -105,7 +105,9 @@ class FakeRosterService:
 def _roster() -> Roster:
     return Roster(
         [
-            Member(gitlab_id=1, nickname="Yuan", role="開發組", position="組長"),
+            # telegram_id 對到 CTX.user_id=42、有 gitlab_username → attribution 用 GitLab 身分
+            Member(gitlab_id=1, gitlab_username="yuan_gl", nickname="Yuan", telegram_id=42,
+                   role="開發組", position="組長"),
             Member(gitlab_id=2, nickname="Amy", position="總召"),
             Member(gitlab_id=3, nickname="Bob", position="總召"),
         ]
@@ -130,7 +132,7 @@ async def test_create_auto_team_and_leader() -> None:
     labels = set(backend.last_create_payload["labels"].split(","))
     assert labels == {"Status::Inbox", "Team::開發組"}  # 預設狀態 + 自動組別
     assert backend.last_create_payload["assignee_ids"] == [1]  # 組長
-    assert "requested by @yuan (42)" in backend.last_create_payload["description"]  # attribution
+    assert "requested by @yuan_gl" in backend.last_create_payload["description"]  # GL-8：GitLab 身分
 
 
 async def test_create_undetermined_team_falls_back_to_chiefs() -> None:
@@ -193,10 +195,10 @@ async def test_update_reports_diff() -> None:
 
 async def test_comment() -> None:
     backend = FakeBackend()
-    tool = GitlabCommentIssueTool(_client(backend), None)
+    tool = GitlabCommentIssueTool(_client(backend), FakeRosterService(_roster()))
     reply = await tool.run(CommentIssueArgs(iid=42, body="場地已確認"), CTX)
     assert "已在 #42 留言" in reply
-    assert "requested by @yuan (42)" in backend.notes[42][0]["body"]
+    assert "requested by @yuan_gl" in backend.notes[42][0]["body"]  # GL-8：GitLab 身分
 
 
 # ------------------------------------------------------------------ #

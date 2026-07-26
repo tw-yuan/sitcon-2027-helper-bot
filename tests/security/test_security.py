@@ -75,7 +75,7 @@ async def test_b_cannot_create_new_label() -> None:
     with pytest.raises(LabelNotFoundError):
         await client.create_issue(
             title="x", description=None, label_names=["urgent"], assignee_ids=[], due_date=None,
-            requester_username="yuan", requester_user_id=7,
+            requester="@yuan",
         )
     assert backend.create_called is False
     # 結構上無建立 label 的方法
