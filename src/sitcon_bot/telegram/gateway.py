@@ -10,11 +10,11 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from telegram import Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
+from telegram import InputMediaPhoto, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, ApplicationBuilder, ContextTypes, MessageHandler, filters
 
@@ -65,6 +65,7 @@ class BusinessResult:
     error: str | None = None
     detail: dict[str, Any] | None = None
     pending: Any = None  # 若以 ask_user 收尾，帶回待答狀態供以問句 message_id 保存
+    media: list[Any] = field(default_factory=list)  # 隨回覆送出的圖片（MediaItem：url/caption）
 
 
 # 業務處理器：吃 BusinessRequest 回傳 BusinessResult。
@@ -226,6 +227,8 @@ class Gateway:
         # 業務回覆為 LLM 產生的動態內容 → escape 後才以 HTML 送出（避免破壞 HTML / 注入）
         reply_mid = await self._reply(message, escape_html(result.reply))
         if result.status == "ok":
+            if result.media:  # 代表縮圖（photo_search）→ 以圖片送出
+                await self._send_media(message, result.media)
             await self._react(message, REACT_DONE)  # 完成 → ✅（clarify/error 維持 👀）
         # 反問待答狀態以「問句 message_id」為鍵保存；使用者回覆該問句時才續接
         if result.pending is not None and reply_mid is not None:
@@ -281,6 +284,34 @@ class Gateway:
                     chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=thread_id
                 )
             await asyncio.sleep(TYPING_INTERVAL)
+
+    async def _send_media(self, message: Message, media: list[Any]) -> None:
+        """送出代表縮圖（單張用 send_photo、多張用媒體群組）；失敗靜默略過（連結已在文字回覆內）。
+
+        Telegram 會自行抓取圖片 URL；圖組上限 10 張。caption 為純文字（含 Flickr 連結，會自動變可點）。
+        """
+        assert self._app is not None
+        items = [m for m in media if getattr(m, "url", None)][:10]
+        if not items:
+            return
+        reply_params = ReplyParameters(message_id=message.message_id, allow_sending_without_reply=True)
+        with contextlib.suppress(Exception):
+            if len(items) == 1:
+                await self._app.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=items[0].url,
+                    caption=items[0].caption or None,
+                    reply_parameters=reply_params,
+                    message_thread_id=message.message_thread_id,
+                )
+            else:
+                group = [InputMediaPhoto(media=m.url, caption=m.caption or None) for m in items]
+                await self._app.bot.send_media_group(
+                    chat_id=message.chat.id,
+                    media=group,
+                    reply_parameters=reply_params,
+                    message_thread_id=message.message_thread_id,
+                )
 
     async def _react(self, message: Message, emoji: str) -> None:
         """對觸發訊息設定 emoji reaction（進度回饋）；失敗（如群組未開放該表情）靜默略過。"""

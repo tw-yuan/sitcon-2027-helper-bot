@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -15,14 +15,26 @@ from ...services.llm.base import ToolSpec
 
 
 @dataclass(slots=True)
+class MediaItem:
+    """工具要求 gateway 送出的一張圖片（縮圖搜尋用）。caption 為純文字。"""
+
+    url: str
+    caption: str
+
+
+@dataclass(slots=True)
 class ToolContext:
-    """單次觸發互動的執行脈絡（觸發者資訊，供 attribution 與稽核）。"""
+    """單次觸發互動的執行脈絡（觸發者資訊，供 attribution 與稽核）。
+
+    media：工具（如 photo_search）可塞入要隨回覆送出的圖片，處理完由 gateway 取出送出。
+    """
 
     chat_id: int
     thread_id: int | None
     user_id: int
     username: str | None
     text: str
+    media: list[MediaItem] = field(default_factory=list)
 
 
 def _strip_titles(schema: dict[str, Any]) -> dict[str, Any]:

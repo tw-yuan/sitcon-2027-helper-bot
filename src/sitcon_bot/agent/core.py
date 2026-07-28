@@ -79,6 +79,8 @@ class AgentResult:
     detail: dict[str, Any] | None = None
     # 若本輪以 ask_user 收尾，帶回待答狀態，供 gateway 以「回覆的問句 message_id」為鍵保存
     pending: Pending | None = None
+    # 工具（如 photo_search）要求隨回覆送出的圖片（MediaItem）
+    media: list[Any] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -147,7 +149,7 @@ class Agent:
             )
 
         action = outcome.tool_actions[-1] if outcome.tool_actions else "chat"
-        return AgentResult(reply=outcome.reply, status="ok", action=action, detail=detail)
+        return AgentResult(reply=outcome.reply, status="ok", action=action, detail=detail, media=list(ctx.media))
 
     async def _requester_note(self, ctx: ToolContext) -> str:
         """把「當前發話者」的名冊身分注入本則訊息，讓「我／幫我／指派給我」可自動解析（RO-5）。

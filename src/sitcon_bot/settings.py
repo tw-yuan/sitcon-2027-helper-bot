@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     )
     roster_sheet_id: str = "1BiK-zMplJqSakQNfdQeDkwe2BMk21ngbm0xGEv8L5e4"
     roster_sheet_gid: int = 1822407485
+    # 照片索引（Flickr Photo Finder 試算表；須分享給 service account）
+    photo_index_sheet_id: str = "1JM2QzJo5kpeILZPyTSE6gUK3z-FyRcaGhPJlYE-FMbs"
+    photo_index_tab: str = "photos"
 
     # --- HackMD ---
     hackmd_token: SecretStr
@@ -70,6 +73,7 @@ class Settings(BaseSettings):
     cache_ttl_hackmd: int = 600
     cache_ttl_drive_tree: int = 1800
     cache_ttl_roster: int = 3600
+    cache_ttl_photos: int = 21600  # 照片索引極少變動 → 預設 6 小時
 
     # --- 其他 ---
     team_charter_path: str = "role.md"  # 職掌文件（RO-8）；供 LLM 判斷組別；/reload 重載
@@ -140,7 +144,8 @@ class Settings(BaseSettings):
             f"meeting_folder={self.hackmd_meeting_folder}  subfolder={self.hackmd_team_meeting_subfolder}",
             f"  時區／DB      : tz={self.tz}  db={self.db_path}",
             f"  快取 TTL(s)   : labels={self.cache_ttl_labels} hackmd={self.cache_ttl_hackmd} "
-            f"drive={self.cache_ttl_drive_tree} roster={self.cache_ttl_roster}",
+            f"drive={self.cache_ttl_drive_tree} roster={self.cache_ttl_roster} photos={self.cache_ttl_photos}",
+            f"  照片索引       : sheet={self.photo_index_sheet_id[:12]}… tab={self.photo_index_tab}",
             f"  反問續接       : ttl={self.context_ttl_seconds}s（純 reply-chain：回覆訊息才帶脈絡）",
             f"  日誌等級       : {self.log_level}",
             "─────────────────────────────",

@@ -132,7 +132,8 @@ async def test_create_auto_team_and_leader() -> None:
     labels = set(backend.last_create_payload["labels"].split(","))
     assert labels == {"Status::Inbox", "Team::開發組"}  # 預設狀態 + 自動組別
     assert backend.last_create_payload["assignee_ids"] == [1]  # 組長
-    assert "requested by @yuan_gl" in backend.last_create_payload["description"]  # GL-8：GitLab 身分
+    # GL-8：來源標註用個人頁連結（非 @mention，不觸發通知）
+    assert "requested by [yuan_gl](https://gitlab.com/yuan_gl)" in backend.last_create_payload["description"]
 
 
 async def test_create_undetermined_team_falls_back_to_chiefs() -> None:
@@ -198,7 +199,8 @@ async def test_comment() -> None:
     tool = GitlabCommentIssueTool(_client(backend), FakeRosterService(_roster()))
     reply = await tool.run(CommentIssueArgs(iid=42, body="場地已確認"), CTX)
     assert "已在 #42 留言" in reply
-    assert "requested by @yuan_gl" in backend.notes[42][0]["body"]  # GL-8：GitLab 身分
+    # GL-8：來源標註用個人頁連結（非 @mention，不觸發通知）
+    assert "requested by [yuan_gl](https://gitlab.com/yuan_gl)" in backend.notes[42][0]["body"]
 
 
 # ------------------------------------------------------------------ #

@@ -40,18 +40,20 @@ async def _safe_roster(service: RosterService | None) -> Roster | None:
         return None
 
 
-def _requester_handle(roster: Roster | None, ctx: ToolContext) -> str:
+def _requester_handle(roster: Roster | None, ctx: ToolContext, gitlab_url: str) -> str:
     """把發話者解析成 GitLab 身分字串供 attribution（GL-8）。
 
-    以名冊 telegram_id 反查 gitlab_username → 「@gitlab_username」（GitLab mention）；名冊查無 GitLab
-    身分時退回標明「（Telegram）」的帳號，避免在 GitLab 上被誤認為 GitLab 使用者。
+    用「個人頁連結」而非 @mention——顯示 GitLab 使用者、可點進 profile，但**不會觸發 GitLab 的
+    @提及通知**（避免每張卡都寄 email 給當事人）。名冊查無 GitLab 身分時退回標明「（Telegram）」的
+    純文字帳號（不加 @，以免誤觸他人 GitLab 提及）。
     """
     if roster is not None:
         member = roster.by_telegram_id(ctx.user_id)
         if member is not None and member.gitlab_username:
-            return f"@{member.gitlab_username}"
+            u = member.gitlab_username
+            return f"[{u}]({gitlab_url.rstrip('/')}/{u})"
     if ctx.username:
-        return f"@{ctx.username}（Telegram）"
+        return f"{ctx.username}（Telegram）"
     return f"Telegram user {ctx.user_id}"
 
 
@@ -76,16 +78,21 @@ def _fmt_issue_line(iid: int, title: str, state: str, labels: list[str], assigne
 
 
 class _GitLabToolBase(Tool):
-    def __init__(self, gitlab: GitLabClient, roster: RosterService | None = None) -> None:
+    def __init__(
+        self, gitlab: GitLabClient, roster: RosterService | None = None, gitlab_url: str = "https://gitlab.com"
+    ) -> None:
         self._gl = gitlab
         self._roster = roster
+        self._gitlab_url = gitlab_url
 
 
 # --------------------------------------------------------------------------- #
 # 建卡
 # --------------------------------------------------------------------------- #
 class CreateIssueArgs(BaseModel):
-    title: str = Field(description="卡片標題")
+    title: str = Field(
+        description="卡片標題；若這張卡涉及 2 個（含）以上組別，前面加「[主責組、協作組…] 」前綴"
+    )
     description: str | None = Field(None, description="描述（整理為簡潔 markdown）")
     team: str | None = Field(
         None, description="任務所屬組名（你依職掌判斷；無法判斷時留空，會自動落總召組）"
@@ -126,7 +133,7 @@ class GitlabCreateIssueTool(_GitLabToolBase):
                 label_names=labels,
                 assignee_ids=assignees,
                 due_date=args.due_date,
-                requester=_requester_handle(roster, ctx),
+                requester=_requester_handle(roster, ctx, self._gitlab_url),
             )
         except LabelNotFoundError as exc:
             return _label_error(exc)
@@ -183,7 +190,7 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
                 set_assignee_ids=args.set_assignee_ids,
                 due_date=args.due_date,
                 clear_due_date=args.clear_due_date,
-                requester=_requester_handle(roster, ctx),
+                requester=_requester_handle(roster, ctx, self._gitlab_url),
             )
         except LabelNotFoundError as exc:
             return _label_error(exc)
@@ -241,7 +248,7 @@ class GitlabCommentIssueTool(_GitLabToolBase):
         roster = await _safe_roster(self._roster)
         try:
             await self._gl.comment_issue(
-                args.iid, args.body, requester=_requester_handle(roster, ctx)
+                args.iid, args.body, requester=_requester_handle(roster, ctx, self._gitlab_url)
             )
         except GitLabError as exc:
             return f"留言失敗：{exc}"
@@ -327,11 +334,13 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
         return header + "\n" + "\n".join(lines)
 
 
-def build_gitlab_tools(gitlab: GitLabClient, roster: RosterService | None) -> list[Tool]:
+def build_gitlab_tools(
+    gitlab: GitLabClient, roster: RosterService | None, gitlab_url: str = "https://gitlab.com"
+) -> list[Tool]:
     return [
-        GitlabCreateIssueTool(gitlab, roster),
-        GitlabUpdateIssueTool(gitlab, roster),
-        GitlabCommentIssueTool(gitlab, roster),
-        GitlabGetIssueTool(gitlab, roster),
-        GitlabSearchIssuesTool(gitlab, roster),
+        GitlabCreateIssueTool(gitlab, roster, gitlab_url),
+        GitlabUpdateIssueTool(gitlab, roster, gitlab_url),
+        GitlabCommentIssueTool(gitlab, roster, gitlab_url),
+        GitlabGetIssueTool(gitlab, roster, gitlab_url),
+        GitlabSearchIssuesTool(gitlab, roster, gitlab_url),
     ]

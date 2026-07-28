@@ -19,12 +19,14 @@ from .agent.tools.drive_tools import build_drive_tools
 from .agent.tools.gitlab_tools import build_gitlab_tools
 from .agent.tools.hackmd_tools import build_hackmd_tools
 from .agent.tools.people_tools import build_people_tools
+from .agent.tools.photo_tools import build_photo_tools
 from .auth.groups import GroupStore
 from .domain.templates import load_template_store
 from .services.drive_client import build_drive_service
 from .services.gitlab_client import build_gitlab_client
 from .services.hackmd_client import build_hackmd_client
 from .services.llm.base import build_llm_client
+from .services.photo_index import build_photo_index_service
 from .services.sheets_roster import RosterUnavailableError, build_roster_service
 from .settings import Settings
 from .storage.audit import AuditLog
@@ -68,6 +70,12 @@ async def run(settings: Settings) -> None:
         settings.drive_scope_map,
         settings.cache_ttl_drive_tree,
     )
+    photos = build_photo_index_service(
+        settings.google_sa_json_path,
+        settings.photo_index_sheet_id,
+        settings.photo_index_tab,
+        settings.cache_ttl_photos,
+    )
     hackmd = build_hackmd_client(settings)
     templates = await asyncio.to_thread(load_template_store)
 
@@ -96,9 +104,10 @@ async def run(settings: Settings) -> None:
 
     tools = ToolRegistry(
         [
-            *build_gitlab_tools(gitlab, roster),
+            *build_gitlab_tools(gitlab, roster, settings.gitlab_url),
             *build_people_tools(roster),
             *build_drive_tools(drive),
+            *build_photo_tools(photos),
             *build_hackmd_tools(
                 hackmd,
                 templates,
@@ -135,11 +144,19 @@ async def run(settings: Settings) -> None:
             await drive.reload()
         except Exception:
             log.warning("Drive 資料夾樹重載失敗", exc_info=True)
+        n_photos = 0
+        try:
+            n_photos = len(await photos.reload())
+        except Exception:
+            log.warning("照片索引重載失敗", exc_info=True)
         hackmd.reload()
         await asyncio.to_thread(templates.reload)
         charter["text"] = await asyncio.to_thread(_load_charter, settings.team_charter_path)
         charter_state = "已載入" if charter["text"] else "（缺）"
-        return f"label {n_labels} 個、名冊 {n_roster} 人、Drive／HackMD 快取已重載、職掌文件{charter_state}"
+        return (
+            f"label {n_labels} 個、名冊 {n_roster} 人、照片索引 {n_photos} 張、"
+            f"Drive／HackMD 快取已重載、職掌文件{charter_state}"
+        )
 
     commands = CommandHandlers(settings, groups, reload_cb=reload_cb)
 
@@ -163,6 +180,7 @@ async def run(settings: Settings) -> None:
             error=result.error,
             detail=result.detail,
             pending=result.pending,
+            media=result.media,
         )
 
     gateway = Gateway(settings, groups, audit, commands, business_handler, pending_store=pending_store)
