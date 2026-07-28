@@ -29,6 +29,14 @@ async def test_prompt_roster_unavailable_notice() -> None:
     assert "名冊：目前暫不可用" in s  # EC-11
 
 
+async def test_prompt_doc_search_rules() -> None:
+    """找文件預設兩邊都查；Drive 內容只給自己判斷，不可寫給使用者。"""
+    s = await _build(PromptData(labels=["Status::Inbox"]))
+    assert "drive_search" in s and "hackmd_search_notes" in s
+    assert "drive_read_file" in s
+    assert "不可以寫給使用者看" in s
+
+
 async def test_prompt_roster_only_whitelist_rows() -> None:
     # 名冊列只放白名單欄位（RO-7）——此處驗證 prompt 忠實呈現傳入的精簡列
     rows = [{"nickname": "Yuan", "gitlab_id": 1, "role": "開發組", "position": "組長"}]

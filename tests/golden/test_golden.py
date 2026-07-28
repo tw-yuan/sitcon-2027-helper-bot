@@ -2,7 +2,9 @@
 
 - 比對器與資料集驗證：永遠執行（不需 LLM）。
 - 實打 LLM 的通過率測試：標 golden，需 `--run-golden` 與 LLM_API_KEY；支援 `--golden-model` 對照。
-逐條比對 LLM 的「第一個工具呼叫」名稱與參數子集，輸出通過率（DoD 目標 ≥95%）。
+逐條比對 LLM 的工具呼叫名稱與參數子集，輸出通過率（DoD 目標 ≥95%）。同一輪可能有多個平行呼叫
+（如未指定來源的文件搜尋會同時打 Drive 與 HackMD），故取「第一個名稱吻合 expect.tool 的呼叫」比對
+參數；`expect.also_tool` 則要求該工具也出現在同一輪呼叫中。
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import yaml
 
 from sitcon_bot.agent.core import ASK_USER_SPEC
 from sitcon_bot.agent.prompts import PromptBuilder, PromptData
-from sitcon_bot.agent.tools.drive_tools import DriveSearchTool
+from sitcon_bot.agent.tools.drive_tools import DriveReadFileTool, DriveSearchTool
 from sitcon_bot.agent.tools.gitlab_tools import (
     GitlabCommentIssueTool,
     GitlabCreateIssueTool,
@@ -38,7 +40,7 @@ GOLDEN_FILE = Path(__file__).parent / "golden.yaml"
 
 TOOL_CLASSES = [
     GitlabCreateIssueTool, GitlabUpdateIssueTool, GitlabCommentIssueTool, GitlabGetIssueTool,
-    GitlabSearchIssuesTool, ResolvePersonTool, DriveSearchTool,
+    GitlabSearchIssuesTool, ResolvePersonTool, DriveSearchTool, DriveReadFileTool,
     HackmdCreateNoteTool, HackmdSearchNotesTool, HackmdGetNoteTool, HackmdUpdateNoteTool,
 ]
 ALL_SPECS = [c.spec() for c in TOOL_CLASSES] + [ASK_USER_SPEC]
@@ -89,6 +91,8 @@ def test_golden_dataset_valid() -> None:
         assert c["input"].strip()
         exp = c["expect"]
         tools = exp["tool"] if isinstance(exp["tool"], list) else [exp["tool"]]
+        if exp.get("also_tool"):
+            tools = [*tools, exp["also_tool"]]
         for t in tools:
             assert t in KNOWN_TOOLS, f"{c['id']}: 未知工具 {t}"
 
@@ -171,10 +175,15 @@ async def test_golden_pass_rate(request: pytest.FixtureRequest) -> None:
         if not resp.tool_calls:
             failures.append((c["id"], "無工具呼叫"))
             continue
-        tc = resp.tool_calls[0]
         exp = c["expect"]
-        if not match_tool(exp["tool"], tc.name):
-            failures.append((c["id"], f"工具 {tc.name} != {exp['tool']}"))
+        names = [t.name for t in resp.tool_calls]
+        tc = next((t for t in resp.tool_calls if match_tool(exp["tool"], t.name)), None)
+        if tc is None:
+            failures.append((c["id"], f"工具 {names} != {exp['tool']}"))
+            continue
+        also = exp.get("also_tool")
+        if also and also not in names:
+            failures.append((c["id"], f"缺少同輪呼叫 {also}（實際 {names}）"))
             continue
         ok, reason = match_args(tc.arguments, exp.get("args_subset"))
         if not ok:

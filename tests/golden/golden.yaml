@@ -121,11 +121,12 @@
     args_subset:
       title_query_present: true
 
-# --- Drive 搜尋 ---
+# --- 文件搜尋（未指定來源 → Drive＋HackMD 同時搜，DR-11）---
 - id: g-017
   input: "小石 幫我找去年的場地租借合約"
   expect:
     tool: drive_search
+    also_tool: hackmd_search_notes
     args_subset:
       keywords_present: true
       scope_contains: ["SITCON 2026"]
@@ -134,8 +135,23 @@
   input: "小石 找一下贊助商的回覆信整理"
   expect:
     tool: drive_search
+    also_tool: hackmd_search_notes
     args_subset:
       keywords_present: true
+
+- id: g-017b
+  input: "小石 只找雲端硬碟裡的場地租借合約"
+  expect:
+    tool: drive_search
+    args_subset:
+      keywords_present: true
+
+- id: g-018b
+  input: "小石 幫我找共筆裡討論贊助方案的那份"
+  expect:
+    tool: hackmd_search_notes
+    args_subset:
+      title_keywords_present: true
 
 # --- HackMD：大籌會議記錄 ---
 - id: g-019

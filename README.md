@@ -35,7 +35,7 @@ GitLab 卡片、Google 共用雲端硬碟檔案搜尋、HackMD 筆記三大類�
 | GitLab 開卡（自動判斷組別、指派組長） | 「小石 幫我開一張卡：官網倒數計時器壞了」 |
 | GitLab 指定細節開卡 | 「小石 開卡給行政組，標題場地保證金匯款，due 8/15」 |
 | GitLab 編輯/留言/查詢 | 「小石 把 #42 改成 Doing，加 0913 一籌」「小石 列出行政組還開著的卡」 |
-| Drive 找檔案（只回 metadata） | 「小石 幫我找去年的場地租借合約」 |
+| 找文件（Drive＋HackMD 一起找，回覆只給檔名與連結） | 「小石 幫我找去年的場地租借合約」 |
 | HackMD 開/找/改筆記 | 「小石 開一份 0913 一籌的會議記錄」「小石 找上次討論贊助方案的文件」 |
 
 管理指令（管理員）：`/authorize`、`/revoke`、`/list_groups`、`/reload`；任何人：`/help`。
@@ -203,17 +203,18 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
                         │  觸發訊息
                         ▼
                      Agent loop（tool-calling）
-                        │  system prompt = 人設＋規則＋今日＋label 白名單＋名冊(白名單欄位)＋職掌
+                        │  system prompt = 人設＋規則＋文件搜尋規則＋今日＋label 白名單＋名冊(白名單欄位)＋職掌
                         ├─▶ LLM adapter（Anthropic / OpenAI 相容；adaptive thinking）
                         └─▶ tools（pydantic 驗證 → 執行）
                               ├ gitlab_*  → GitLabClient（label 白名單／scoped 互斥／無 state 變更）
                               ├ resolve_person → 名冊（RO-2 白名單）
-                              ├ drive_search → DriveClient（僅 metadata）
+                              ├ drive_search/_read_file → DriveClient（搜尋只回 metadata；
+                              │                            內容僅供判斷相關性，不外流）
                               └ hackmd_*  → HackMDClient（notes／team folders／模板）
    SQLite（授權清單、稽核）持久化於 volume
 ```
 
-- 觸發過濾、授權判定、label 白名單、scoped 互斥、名冊欄位白名單、Drive 僅 metadata、
+- 觸發過濾、授權判定、label 白名單、scoped 互斥、名冊欄位白名單、Drive 內容不外流、
   HackMD 無刪除等**硬性限制皆在程式層強制**，不依賴 prompt（NFR-5）。
 - 對話脈絡以（群組, topic）保留最近互動供指代，30 分鐘或 10 輪失效（TRIG-4）。
 

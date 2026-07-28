@@ -8,9 +8,12 @@ corpora=allDrives + includeItemsFromAllDrives + supportsAllDrives。
 並就地組出路徑；folder metadata 以快取避免重複查詢。API 呼叫量因此只隨命中筆數增長，不需先枚舉
 整棵資料夾樹（避免大量資料夾時逾時）。
 
-【硬性 DR-4】結果只回 metadata：檔名、路徑、Drive URL、檔案類型；不回檔案內容／縮圖／片段
-（回傳型別只有 DriveFile{name,path,url,mime}，不存在讀取內容的 code path）。fullText 僅作
-伺服器端過濾提升召回（DR-3）。
+【DR-4】搜尋結果（search）只回 metadata：檔名、路徑、Drive URL、檔案類型、檔案 ID。檔案內容另有
+唯讀的 read_file，供 LLM 自行判斷哪份檔案才是使用者要找的（相關性判斷）——**內容不得寫給使用者**，
+該限制由 system prompt 規範（見 agent/prompts.py 文件搜尋規則），程式層僅保證：
+  1. 讀取一律先做範圍檢查，範圍外檔案讀不到（DR-1）；
+  2. 只讀得出文字（Google 文件/試算表/簡報 export、純文字檔 download），二進位檔一律拒絕；
+  3. 全程唯讀，仍不寫入任何東西（DR-8/DR-9）。
 """
 
 from __future__ import annotations
@@ -30,15 +33,51 @@ DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 _MAX_DEPTH = 12  # 祖先鏈保護上限
 _Clock = Callable[[], float]
 
+CONTENT_LIMIT = 8000  # read_file 回傳字數上限（僅供相關性判斷，不需全文）
+
+# Google 原生檔 → 匯出成文字的 MIME
+_EXPORT_AS = {
+    "application/vnd.google-apps.document": "text/plain",
+    "application/vnd.google-apps.presentation": "text/plain",
+    "application/vnd.google-apps.spreadsheet": "text/csv",
+}
+# 可直接下載當文字讀的非 Google 原生檔
+_TEXT_MIMES = {"application/json", "application/xml", "application/x-yaml", "application/yaml"}
+
+
+class DriveReadError(Exception):
+    """read_file 無法取得內容（範圍外、不存在、型別不支援）。訊息可直接回給 LLM。"""
+
 
 @dataclass(frozen=True, slots=True)
 class DriveFile:
-    """搜尋結果——**只有 metadata**，結構上無法承載檔案內容（DR-4）。"""
+    """搜尋結果——只有 metadata（DR-4）；file_id 供後續 read_file 讀內容用。"""
 
     name: str
     path: str
     url: str
     mime: str | None = None
+    file_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DriveContent:
+    """read_file 的結果：檔案 metadata ＋ 取出的純文字內容。"""
+
+    file: DriveFile
+    text: str
+    truncated: bool = False
+
+
+def content_mode(mime: str | None) -> tuple[str, str | None] | None:
+    """回傳 ('export', 匯出 MIME) / ('download', None)；無法取出文字則 None。"""
+    if not mime:
+        return None
+    if mime in _EXPORT_AS:
+        return "export", _EXPORT_AS[mime]
+    if mime.startswith("text/") or mime in _TEXT_MIMES:
+        return "download", None
+    return None
 
 
 @dataclass(slots=True)
@@ -55,6 +94,8 @@ class DriveGateway(Protocol):
 
     async def search_files(self, query: str) -> list[dict[str, Any]]: ...
     async def get_folder(self, folder_id: str) -> dict[str, Any] | None: ...
+    async def get_file(self, file_id: str) -> dict[str, Any] | None: ...
+    async def fetch_text(self, file_id: str, export_mime: str | None) -> str: ...
 
 
 def _escape(value: str) -> str:
@@ -151,20 +192,47 @@ class DriveSearchService:
             folder_path = await self._scope_path(parent, selected_root_ids)
             if folder_path is None:
                 continue  # 範圍外，DR-1
-            matches.append(
-                DriveFile(
-                    name=f.get("name", ""),
-                    path=f"{folder_path}/{f.get('name', '')}",
-                    url=f.get("webViewLink", ""),
-                    mime=f.get("mimeType"),
-                )
-            )
+            matches.append(self._to_file(f, folder_path))
 
         total = len(matches)
         page = matches[offset : offset + limit]
         return SearchResult(
             files=page, total=total, offset=offset, has_more=(offset + limit) < total, keywords=keywords
         )
+
+    @staticmethod
+    def _to_file(raw: dict[str, Any], folder_path: str) -> DriveFile:
+        name = raw.get("name", "")
+        return DriveFile(
+            name=name,
+            path=f"{folder_path}/{name}",
+            url=raw.get("webViewLink", ""),
+            mime=raw.get("mimeType"),
+            file_id=raw.get("id", ""),
+        )
+
+    async def read_file(self, file_id: str) -> DriveContent:
+        """讀取範圍內檔案的純文字內容（供相關性判斷）。取不到時丟 DriveReadError。
+
+        範圍檢查與搜尋同一套：沿 parents 走到某個範圍根才算數，範圍外一律拒讀（DR-1）。
+        """
+        self._maybe_expire_cache()
+        data = await self._gateway.get_file(file_id)
+        if data is None:
+            raise DriveReadError("找不到這個檔案，或 bot 沒有讀取權限。")
+        parents = data.get("parents") or []
+        folder_path = await self._scope_path(parents[0], set(self._scope.values())) if parents else None
+        if folder_path is None:
+            raise DriveReadError("這個檔案不在可搜尋的範圍資料夾內，不能讀取。")
+
+        meta = self._to_file(data, folder_path)
+        mode = content_mode(meta.mime)
+        if mode is None:
+            raise DriveReadError(f"這個檔案類型（{meta.mime or '未知'}）無法取出文字內容，只能看檔名與路徑。")
+
+        text = await self._gateway.fetch_text(file_id, mode[1])
+        truncated = len(text) > CONTENT_LIMIT
+        return DriveContent(file=meta, text=text[:CONTENT_LIMIT], truncated=truncated)
 
 
 # --------------------------------------------------------------------------- #
@@ -222,6 +290,37 @@ class GoogleDriveGateway:
                 return None  # 無權限/不存在 → 視為不可解析（範圍外）
             raise
 
+    def _get_file_sync(self, file_id: str) -> dict[str, Any] | None:
+        from googleapiclient.errors import HttpError
+
+        service = self._service_or_build()
+        try:
+            return (
+                service.files()
+                .get(
+                    fileId=file_id,
+                    supportsAllDrives=True,
+                    fields="id,name,parents,mimeType,webViewLink",
+                )
+                .execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
+            )
+        except HttpError as exc:
+            if getattr(exc, "status_code", None) in (403, 404):
+                return None
+            raise
+
+    def _fetch_text_sync(self, file_id: str, export_mime: str | None) -> str:
+        """Google 原生檔走 export_media 轉文字；其餘（純文字檔）走 get_media 下載。皆為唯讀。"""
+        service = self._service_or_build()
+        if export_mime:
+            req = service.files().export_media(fileId=file_id, mimeType=export_mime)
+        else:
+            req = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        data = req.execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+
     async def search_files(self, query: str) -> list[dict[str, Any]]:
         import asyncio
 
@@ -231,6 +330,16 @@ class GoogleDriveGateway:
         import asyncio
 
         return await asyncio.to_thread(self._get_folder_sync, folder_id)
+
+    async def get_file(self, file_id: str) -> dict[str, Any] | None:
+        import asyncio
+
+        return await asyncio.to_thread(self._get_file_sync, file_id)
+
+    async def fetch_text(self, file_id: str, export_mime: str | None) -> str:
+        import asyncio
+
+        return await asyncio.to_thread(self._fetch_text_sync, file_id, export_mime)
 
 
 def build_drive_service(sa_json_path: str, scope: dict[str, str], ttl_seconds: int) -> DriveSearchService:

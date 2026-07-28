@@ -2,7 +2,7 @@
 
 (a) 名冊白名單外欄位不外洩（RO-2）
 (b) 不得建立新 label（GL-10）
-(c) 不回傳 Drive 檔案內容（DR-4）
+(c) Drive 搜尋只回 metadata（DR-4）、讀內容限範圍內且僅供 LLM 判斷（DR-1）
 (d) 外部內容中的指令不改變行為（NFR-6：標記為資料）
 (e) 未授權群組／私訊全功能拒絕（AUTH-4/5）
 """
@@ -16,9 +16,10 @@ import pytest
 
 from sitcon_bot.agent.prompts import PromptBuilder, PromptData
 from sitcon_bot.agent.tools.base import ToolContext
+from sitcon_bot.agent.tools.drive_tools import DriveReadFileArgs, DriveReadFileTool
 from sitcon_bot.agent.tools.external_data import neutralize_fence, wrap_external
 from sitcon_bot.agent.tools.gitlab_tools import CreateIssueArgs, GetIssueArgs, GitlabCreateIssueTool, GitlabGetIssueTool
-from sitcon_bot.services.drive_client import DriveFile
+from sitcon_bot.services.drive_client import DriveFile, DriveReadError, DriveSearchService
 from sitcon_bot.services.gitlab_client import GitLabClient, LabelNotFoundError
 from sitcon_bot.services.sheets_roster import Roster, parse_roster
 from sitcon_bot.telegram.routing import Action, Kind, route
@@ -26,6 +27,8 @@ from sitcon_bot.telegram.routing import Action, Kind, route
 pytestmark = pytest.mark.security
 
 CTX = ToolContext(chat_id=-1, thread_id=None, user_id=7, username="yuan", text="x")
+
+_GDOC = "application/vnd.google-apps.document"
 
 SENSITIVE = ["yuan@example.com", "0912345678", "1234-5678-9012", "王小元"]
 FULL_HEADER = [
@@ -89,13 +92,79 @@ async def test_b_cannot_create_new_label() -> None:
     assert backend.create_called is False
 
 
-# ---- (c) 不回傳 Drive 檔案內容（DR-4）----
-def test_c_drive_result_has_no_content_field() -> None:
+# ---- (c) Drive：搜尋結果僅 metadata（DR-4），讀內容受範圍與型別限制（DR-1）----
+def test_c_drive_search_result_has_no_content_field() -> None:
     f = DriveFile(name="合約.pdf", path="SITCON 2027/合約.pdf", url="https://drive/1", mime="application/pdf")
-    assert set(dataclasses.asdict(f).keys()) == {"name", "path", "url", "mime"}
+    assert set(dataclasses.asdict(f).keys()) == {"name", "path", "url", "mime", "file_id"}
     assert not hasattr(f, "content")
     assert not hasattr(f, "snippet")
     assert not hasattr(f, "thumbnail")
+
+
+_DRIVE_FILES = {
+    "in": {"id": "in", "name": "評估.gdoc", "parents": ["f1"], "mimeType": _GDOC, "webViewLink": "u1"},
+    "out": {"id": "out", "name": "別人的.gdoc", "parents": ["x1"], "mimeType": _GDOC, "webViewLink": "u2"},
+    "pdf": {"id": "pdf", "name": "合約.pdf", "parents": ["f1"], "mimeType": "application/pdf", "webViewLink": "u3"},
+}
+_DRIVE_FOLDERS = {
+    "root": {"id": "root", "name": "SITCON 2027", "parents": []},
+    "f1": {"id": "f1", "name": "合約", "parents": ["root"]},
+    "x1": {"id": "x1", "name": "他人資料夾", "parents": []},  # 走不到範圍根
+}
+
+
+class _DriveBackend:
+    """兩個 Google 文件（範圍內／範圍外）＋範圍內的 PDF。"""
+
+    def __init__(self) -> None:
+        self.fetched: list[str] = []
+
+    async def search_files(self, query: str) -> list[dict]:
+        return list(_DRIVE_FILES.values())
+
+    async def get_folder(self, folder_id: str) -> dict | None:
+        return _DRIVE_FOLDERS.get(folder_id)
+
+    async def get_file(self, file_id: str) -> dict | None:
+        return _DRIVE_FILES.get(file_id)
+
+    async def fetch_text(self, file_id: str, export_mime: str | None) -> str:
+        self.fetched.append(file_id)
+        return "機密內容"
+
+
+def _drive_service(backend: _DriveBackend) -> DriveSearchService:
+    return DriveSearchService(backend, {"SITCON 2027": "root"}, ttl_seconds=1800)
+
+
+async def test_c_drive_read_rejects_out_of_scope_and_binary() -> None:
+    backend = _DriveBackend()
+    service = _drive_service(backend)
+
+    assert (await service.read_file("in")).text == "機密內容"  # 範圍內、可轉文字 → 讀得到
+
+    with pytest.raises(DriveReadError):  # DR-1：範圍外
+        await service.read_file("out")
+    with pytest.raises(DriveReadError):  # 二進位檔不讀
+        await service.read_file("pdf")
+    assert backend.fetched == ["in"]  # 被拒的兩個檔案完全沒去抓內容
+
+
+async def test_c_drive_read_tool_marks_content_internal_only() -> None:
+    """工具層必附「不得寫給使用者」註記，且內容包在資料圍欄內（NFR-6）。"""
+    tool = DriveReadFileTool(_drive_service(_DriveBackend()))
+    reply = await tool.run(DriveReadFileArgs(file_id="in"), CTX)
+    assert "不得轉述" in reply
+    assert "<external_data>" in reply and "機密內容" in reply
+
+
+async def test_c_prompt_forbids_relaying_drive_content() -> None:
+    async def provider() -> PromptData:
+        return PromptData(labels=[])
+
+    prompt = await PromptBuilder(provider).build()
+    assert "drive_read_file" in prompt
+    assert "不可以寫給使用者看" in prompt
 
 
 # ---- (d) 外部內容中的指令不改變行為（NFR-6）----

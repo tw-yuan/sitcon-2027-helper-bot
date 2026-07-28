@@ -1,4 +1,8 @@
-"""Google Drive 搜尋工具（DR-1～DR-9）。只回傳 metadata（DR-4）。"""
+"""Google Drive 工具（DR-1～DR-9）。
+
+drive_search 只回 metadata（DR-4）；drive_read_file 可讀檔案內容，但**內容僅供 LLM 自行判斷
+相關性，不得寫給使用者**（規範見 agent/prompts.py 文件搜尋規則；程式層只保證範圍檢查與唯讀）。
+"""
 
 from __future__ import annotations
 
@@ -6,11 +10,16 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from ...services.drive_client import DriveSearchService
+from ...services.drive_client import DriveReadError, DriveSearchService
 from .base import Tool, ToolContext
 from .external_data import wrap_external
 
 log = logging.getLogger(__name__)
+
+INTERNAL_ONLY_NOTE = (
+    "【僅供你判斷相關性】以下內容不得轉述、摘要、翻譯、引用或節錄給使用者；"
+    "回覆只能給檔名、路徑與連結。"
+)
 
 
 class DriveSearchArgs(BaseModel):
@@ -24,8 +33,8 @@ class DriveSearchArgs(BaseModel):
 class DriveSearchTool(Tool):
     name = "drive_search"
     description = (
-        "在共用雲端硬碟的 SITCON 2025／2026／2027 範圍內搜尋檔案，只回傳檔名、路徑、連結、類型"
-        "（絕不回傳檔案內容）。可用 scope 限縮年度、offset 取下一批。"
+        "在共用雲端硬碟的 SITCON 2025／2026／2027 範圍內搜尋檔案，回傳檔案 ID、檔名、路徑、連結、"
+        "類型（不含檔案內容；要確認內容用 drive_read_file）。可用 scope 限縮年度、offset 取下一批。"
     )
     args_model = DriveSearchArgs
 
@@ -47,12 +56,52 @@ class DriveSearchTool(Tool):
             return f"找不到符合的檔案（關鍵字：{kws}）。可換個關鍵字再試一次。"  # DR-7
 
         # 檔名與資料夾路徑由共用雲端硬碟任何可寫者操控 → 整份清單包進 <external_data>（NFR-6，DR-4 仍只回 metadata）。
-        lines = [f"{f.name}｜{f.path}｜{f.url}" + (f"｜{f.mime}" if f.mime else "") for f in result.files]
+        lines = [
+            f"[{f.file_id}]｜{f.name}｜{f.path}｜{f.url}" + (f"｜{f.mime}" if f.mime else "")
+            for f in result.files
+        ]
         header = f"共 {result.total} 筆（關鍵字：{kws}）"
         if result.has_more:
             header += f"，顯示第 {result.offset + 1}–{result.offset + len(result.files)} 筆，可要求下一批"
         return header + "：\n" + wrap_external("\n".join(lines))
 
 
+class DriveReadFileArgs(BaseModel):
+    file_id: str = Field(description="drive_search 結果每列開頭 [ ] 內的檔案 ID")
+
+
+class DriveReadFileTool(Tool):
+    name = "drive_read_file"
+    description = (
+        "讀取雲端硬碟檔案的文字內容，用途只有一個：讓你自己確認這份檔案是不是使用者要找的東西、"
+        "從多個候選中挑出最相關的。【硬性】讀到的內容不得轉述、摘要、引用或節錄給使用者，"
+        "回覆只能給檔名、路徑與連結，要看內容請使用者自己點連結開。"
+        "支援 Google 文件／試算表／簡報與純文字檔；PDF、圖片、Office 檔等二進位檔讀不到。"
+    )
+    args_model = DriveReadFileArgs
+
+    def __init__(self, service: DriveSearchService | None) -> None:
+        self._service = service
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, DriveReadFileArgs)
+        if self._service is None:
+            return "雲端硬碟搜尋未設定，請通知管理員。"
+        try:
+            content = await self._service.read_file(args.file_id.strip())
+        except DriveReadError as exc:  # 範圍外／不存在／型別不支援
+            return str(exc)
+        except Exception as exc:  # 憑證/網路等
+            log.warning("Drive 讀取檔案失敗", exc_info=True)
+            return f"讀取檔案內容暫時失敗（{exc}），可改用檔名與路徑判斷。"
+
+        f = content.file
+        body = f"檔名：{f.name}｜路徑：{f.path}\n內容：\n{content.text}"
+        if content.truncated:
+            body += "\n…（內容過長已截斷）"
+        # 檔名、路徑與內文皆為外部可寫內容 → 全部包進 <external_data>（NFR-6）；連結留在圍欄外供回覆使用。
+        return f"{INTERNAL_ONLY_NOTE}\n{f.url}\n" + wrap_external(body)
+
+
 def build_drive_tools(service: DriveSearchService | None) -> list[Tool]:
-    return [DriveSearchTool(service)]
+    return [DriveSearchTool(service), DriveReadFileTool(service)]
