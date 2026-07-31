@@ -7,9 +7,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import timedelta
 
 from ..auth.groups import GroupStore
+from ..notify.scheduler import MilestoneNotifier
+from ..notify.subscriptions import SubscriptionStore
+from ..services.milestone_schedule import (
+    MilestoneScheduleService,
+    MilestoneScheduleUnavailableError,
+    norm_team,
+)
 from ..settings import Settings
 from .formatting import escape_html
 
@@ -47,9 +57,34 @@ HELP_TEXT = """<b>小石</b> — SITCON 2027 工作人員助理
 • 小石 幫行政組開今天的會議記錄
 • 小石 找上次討論贊助方案的那份文件
 
-管理指令（管理員）：/authorize /revoke /list_groups /reload"""
+<b>里程碑預告（管理員設定）</b>
+每天晚上 23:00 自動預告隔天的籌備時程里程碑，並附上過期未關閉的 GitLab 卡片提醒（tag assignee）。
+• /notify_on — 本群訂閱「全部組別」
+• /notify_on 開發組, 行政組 — 只收這幾組（＋全體、重要日期）
+• /notify_off — 本群取消訂閱
+• /notify_list — 列出所有訂閱群組
+• /notify_test — 立刻預覽本群明天會收到的內容
+
+管理指令（管理員）：/authorize /revoke /list_groups /reload /notify_on /notify_off /notify_list /notify_test"""
 
 START_TEXT = "我是小石，SITCON 2027 的工作人員助理。輸入 /help 看我能做什麼。"
+
+# /notify_on 參數的組別分隔字元（中英標點與空白皆可）
+_TEAM_SPLIT_RE = re.compile(r"[,，、/\s]+")
+# 代表「全部組別」的參數寫法
+_ALL_KEYWORDS = frozenset({"全部", "全部組別", "所有", "所有組別", "all", "*"})
+
+MILESTONE_DISABLED = "里程碑預告功能未啟用（MILESTONE_NOTIFY_ENABLED=false）。"
+MILESTONE_UNAVAILABLE = "目前讀不到籌備時程表，請稍後再試；若只是要訂閱全部組別，可直接用 /notify_on。"
+
+
+@dataclass(slots=True)
+class MilestoneDeps:
+    """里程碑預告指令所需的協作物件（未啟用時為 None）。"""
+
+    subscriptions: SubscriptionStore
+    schedule: MilestoneScheduleService
+    notifier: MilestoneNotifier
 
 
 class CommandHandlers:
@@ -60,10 +95,12 @@ class CommandHandlers:
         settings: Settings,
         groups: GroupStore,
         reload_cb: ReloadCallback | None = None,
+        milestones: MilestoneDeps | None = None,
     ) -> None:
         self._settings = settings
         self._groups = groups
         self._reload_cb = reload_cb
+        self._milestones = milestones
 
     async def authorize(self, chat_id: int, title: str | None) -> str:
         newly = await self._groups.authorize(chat_id, title, self._settings.telegram_admin_id)
@@ -74,8 +111,13 @@ class CommandHandlers:
 
     async def revoke(self, chat_id: int) -> str:
         existed = await self._groups.revoke(chat_id)
+        # 未授權群組不該再收到任何主動訊息 → 一併清掉里程碑預告訂閱
+        unsubscribed = False
+        if self._milestones is not None:
+            unsubscribed = await self._milestones.subscriptions.unsubscribe(chat_id)
         if existed:
-            return "已撤銷此群組的授權，小石在此群組將停止服務。"
+            tail = "（里程碑預告訂閱也已一併取消）" if unsubscribed else ""
+            return f"已撤銷此群組的授權，小石在此群組將停止服務。{tail}"
         return "此群組原本就未授權。"
 
     async def list_groups(self) -> str:
@@ -91,6 +133,79 @@ class CommandHandlers:
             return "已重載（目前尚無可重載的快取）。"
         summary = await self._reload_cb()
         return f"已重載：{summary}"
+
+    # ------------------------------------------------------------------ #
+    # 里程碑預告（NT-4／NT-9）
+    # ------------------------------------------------------------------ #
+    async def notify_on(
+        self, chat_id: int, title: str | None, admin_id: int, args: str, thread_id: int | None = None
+    ) -> str:
+        """訂閱本群的里程碑預告。args 空或「全部」＝所有組別，否則為組別清單。"""
+        if self._milestones is None:
+            return MILESTONE_DISABLED
+        raw = [t for t in _TEAM_SPLIT_RE.split(args.strip()) if t]
+        wants_all = not raw or all(t.lower() in _ALL_KEYWORDS for t in raw)
+
+        teams: list[str] = []
+        if not wants_all:
+            try:
+                schedule = await self._milestones.schedule.get()
+            except MilestoneScheduleUnavailableError:
+                return MILESTONE_UNAVAILABLE
+            known = {norm_team(t): t for t in schedule.teams()}
+            unknown = [t for t in raw if norm_team(t) not in known]
+            if unknown:
+                return (
+                    f"❌ 不認得這些組別：{escape_html('、'.join(unknown))}\n"
+                    f"時程表目前的主導組別：{escape_html('、'.join(schedule.teams()))}"
+                )
+            teams = list(dict.fromkeys(known[norm_team(t)] for t in raw))  # 正規化為表上的寫法並去重
+
+        await self._milestones.subscriptions.subscribe(chat_id, title, teams, admin_id, thread_id)
+        scope = "全部組別" if not teams else escape_html("、".join(teams))
+        extra = "" if not teams else f"（另含 {escape_html('、'.join(self._settings.milestone_always_team_list))}）"
+        return (
+            f"✅ 已設定本群接收里程碑預告：{scope}{extra}\n"
+            f"每天 {self._settings.milestone_notify_hour:02d}:"
+            f"{self._settings.milestone_notify_minute:02d} 預告隔天事項；可用 /notify_test 先看看內容。"
+        )
+
+    async def notify_off(self, chat_id: int) -> str:
+        if self._milestones is None:
+            return MILESTONE_DISABLED
+        existed = await self._milestones.subscriptions.unsubscribe(chat_id)
+        return "已取消本群的里程碑預告。" if existed else "本群原本就沒有訂閱里程碑預告。"
+
+    async def notify_list(self) -> str:
+        if self._milestones is None:
+            return MILESTONE_DISABLED
+        subs = await self._milestones.subscriptions.list_all()
+        if not subs:
+            return "目前沒有任何群組訂閱里程碑預告。"
+        lines = [f"里程碑預告訂閱（{len(subs)}）："]
+        for s in subs:
+            name = escape_html(s.title) if s.title else "(未命名)"
+            scope = "全部組別" if s.all_teams else escape_html("、".join(s.teams))
+            lines.append(f"• {name}（{s.chat_id}）→ {scope}")
+        lines.append(
+            f"每天 {self._settings.milestone_notify_hour:02d}:"
+            f"{self._settings.milestone_notify_minute:02d} 送出隔天事項。"
+        )
+        return "\n".join(lines)
+
+    async def notify_test(self, chat_id: int) -> str:
+        """預覽本群明天會收到的內容（不影響排程狀態，也不會標記為已送出）。"""
+        if self._milestones is None:
+            return MILESTONE_DISABLED
+        sub = await self._milestones.subscriptions.get(chat_id)
+        target = self._milestones.notifier.now().date() + timedelta(days=1)
+        try:
+            body = await self._milestones.notifier.render_for(sub, target)
+        except MilestoneScheduleUnavailableError:
+            return MILESTONE_UNAVAILABLE
+        if sub is None:
+            body += "\n\n（本群尚未訂閱，以上為「全部組別」的預覽；要訂閱請用 /notify_on）"
+        return body
 
     def help_text(self) -> str:
         return HELP_TEXT

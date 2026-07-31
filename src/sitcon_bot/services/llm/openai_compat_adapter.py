@@ -2,6 +2,10 @@
 
 thinking 對映：low/medium/high → reasoning_effort；off → 不帶。
 工具結果在此格式為獨立的 role=tool 訊息；assistant 回合以 raw dict 原樣回填。
+
+service_tier：留空則不帶（由 provider 決定）。Codex 的「fast mode」對應 service_tier="fast"，
+官方 API 另有 priority／flex；能不能用取決於帳號與所走的 gateway，故做成純直通設定，
+不支援時 provider 會回 400，改回留空即可。
 """
 
 from __future__ import annotations
@@ -36,9 +40,11 @@ class OpenAICompatAdapter(LLMClient):
         base_url: str | None = None,
         client: Any | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        service_tier: str = "",
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
+        self._service_tier = service_tier
         if client is not None:
             self._client = client
         else:
@@ -78,6 +84,8 @@ class OpenAICompatAdapter(LLMClient):
             params["tool_choice"] = "auto"
         if thinking != "off":
             params["reasoning_effort"] = thinking
+        if self._service_tier:
+            params["service_tier"] = self._service_tier
 
         started = time.monotonic()
         resp = await self._client.chat.completions.create(**params)

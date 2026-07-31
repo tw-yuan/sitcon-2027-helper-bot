@@ -129,5 +129,6 @@ def build_llm_client(settings: Any) -> LLMClient:
             api_key=settings.llm_api_key.get_secret_value(),
             model=settings.llm_model,
             base_url=settings.llm_base_url or None,
+            service_tier=getattr(settings, "llm_service_tier", "") or "",
         )
     raise ValueError(f"未知的 LLM_PROVIDER：{provider}")

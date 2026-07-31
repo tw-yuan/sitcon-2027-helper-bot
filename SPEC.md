@@ -102,6 +102,7 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **AUTH-7** `/reload`：僅超管可用，清空並重載所有快取（名冊、label、HackMD 資料夾與筆記清單、Drive 資料夾樹、職掌文件）。
 - **AUTH-8** `/help`：授權群組內任何人可用，列出功能簡介與範例句。
 - **AUTH-9** 授權清單持久化於本機資料庫（volume），容器重啟不失效。
+- **AUTH-11** `/notify_on`、`/notify_off`、`/notify_list`、`/notify_test`：僅超管、僅已授權群組內可用（里程碑預告設定，見 10.4）。
 - **AUTH-10** 身分比對（超管判定、名冊對應）一律使用 Telegram 數字 user ID；username 僅作顯示與名冊輔助對照。
 
 ---
@@ -220,6 +221,22 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **LOG-3** 非觸發訊息之內容一律不記錄（呼應 TRIG-1）。
 - **LOG-4** 稽核紀錄不得含 RO-2 白名單以外之名冊欄位。
 
+### 10.4 里程碑預告（主動通知）
+
+> 客戶於 2026-07-30 追加之需求；原第 15 章第 10 項「不做主動通知／排程」據此縮限為「除本節外不做」。
+
+- **NT-1** 資料來源：`.env` 指定之「SITCON 2027 籌備時程表」Sheet ID＋分頁（gid），以 service account 唯讀讀取。欄位以表頭字串定位：`事件名稱`、`開始時間`、`結束時間`、`主導組別`、`備註`；其餘欄位忽略。
+- **NT-2** 解析規則：日期容忍 `YYYY/M/D`、`YYYY-MM-DD` 等寫法；事件名稱為空、或起訖日期皆無法解析（時程未定）之列一律略過。`主導組別` 留空者歸為「未分組」。
+- **NT-3** 某日「有事」的定義：當日為單日事件、當日為多日事件的起始日、或當日為多日事件的最後一天。多日事件的中間日不重複預告。
+- **NT-4** 訂閱粒度為群組：管理員於目標群組內指定該群要收哪些主導組別，或「全部組別」。訂閱持久化於 SQLite，重啟保留；於 forum topic 內設定者，通知送至該 topic。
+- **NT-5** 訂閱指定組別時，`MILESTONE_ALWAYS_TEAMS`（預設「全體」「重要日期」）之事項一律附帶送出。組名比對容忍「開發」／「開發組」等寫法。
+- **NT-6** 送出時間：每天 `MILESTONE_NOTIFY_HOUR:MINUTE`（預設 23:00，Asia/Taipei），內容為**隔天**的里程碑（一行一筆 `[組別] 事件名稱`）＋**當日**過期卡片提醒（NT-11）。
+- **NT-7** 冪等與補送：送出後記錄目標日期，重啟或重複檢查皆不重送；錯過到點（如 bot 正在重啟）時於 `MILESTONE_NOTIFY_CATCHUP_MINUTES`（預設 60 分）內補送，逾時則跳過該日。時程表讀取失敗時不記錄狀態，於補送視窗內重試。
+- **NT-8** 某群當日沒有其訂閱範圍內的事項、也沒有過期卡片時不送出（預設；`MILESTONE_NOTIFY_WHEN_EMPTY=true` 可改為仍送）。單一群組送出失敗不影響其他群組。
+- **NT-9** 管理指令（皆限超管、限已授權群組）：`/notify_on [組別…]`、`/notify_off`、`/notify_list`、`/notify_test`（立即預覽隔天內容，不影響排程狀態）。撤銷群組授權（`/revoke`）時一併移除該群訂閱。
+- **NT-10** 通知內容為試算表／GitLab 原文，注入前一律 HTML escape；本功能不經 LLM。
+- **NT-11** 過期卡片提醒（客戶於 2026-07-31 追加）：同一則訊息附上專案中 `state=opened` 且 `due_date ≤ 送出當日` 的卡片，過期最久在前，最多 20 張（超出以「另有 N 張」帶過）。assignee 依名冊（gitlab_id）對應為 Telegram tag：有 `telegram_username` 用 `@username`；僅有 `telegram_id` 用 `tg://user?id=` 點擊式 mention；查無對應顯示名稱＋「無 TG 對應」；無指派顯示「未指派」。卡片不分組別，所有訂閱群皆收到全部過期卡。卡片或名冊取得失敗時**降級**（分別為略過卡片段／不 tag），不影響里程碑段；隔天無里程碑但有過期卡片時仍送出（僅卡片段）。
+
 ---
 
 ## 11. 非功能需求
@@ -261,6 +278,19 @@ audit_log
   detail         TEXT                  -- JSON：工具參數摘要與結果
   status         TEXT                  -- ok / error / clarify
   error          TEXT                  -- 錯誤摘要（可空）
+
+milestone_subscriptions                 -- NT-4
+  chat_id        INTEGER PRIMARY KEY   -- 已授權群組
+  title          TEXT                  -- 設定當下的群組名稱
+  teams          TEXT                  -- 逗號分隔的主導組別；空字串＝全部
+  thread_id      INTEGER               -- forum topic id（非 forum 為 NULL）
+  updated_by     INTEGER
+  updated_at     TEXT                  -- ISO8601（UTC）
+
+notify_state                            -- NT-7
+  key            TEXT PRIMARY KEY      -- 目前僅 milestone_digest_last_target_date
+  value          TEXT
+  updated_at     TEXT                  -- ISO8601（UTC）
 ```
 
 記憶體內（不持久化）：對話脈絡（keyed by chat_id＋thread_id）、各項快取（labels、名冊、HackMD folders／notes、Drive 資料夾樹、職掌文件）。
@@ -316,7 +346,7 @@ audit_log
 7. 私訊互動；未授權群組服務。
 8. `sitcon-tw/2027` 以外之 GitLab 專案；指定 team 以外之 HackMD workspace；指定兩資料夾以外之 Drive 範圍。
 9. 搬移既有 HackMD 筆記至其他資料夾。
-10. bot 主動通知、排程、到期提醒。
+10. bot 主動通知、排程、到期提醒——**除第 10.4 節之里程碑預告（NT-*）外**。個別卡片的到期提醒、催辦仍不做。
 11. 名冊之寫入或編輯。
 12. 使用者層級之細部權限（授權粒度為群組）。
 13. Web 管理介面。

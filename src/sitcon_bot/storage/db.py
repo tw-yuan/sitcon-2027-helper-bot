@@ -48,6 +48,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts);
 CREATE INDEX IF NOT EXISTS idx_audit_chat ON audit_log (chat_id);
+
+-- NT-4：里程碑預告訂閱（每群一列；teams 空字串＝全部組別）
+CREATE TABLE IF NOT EXISTS milestone_subscriptions (
+    chat_id        INTEGER PRIMARY KEY,   -- Telegram chat id（須為已授權群組）
+    title          TEXT,                  -- 設定當下的群組名稱（供 /notify_list 顯示）
+    teams          TEXT,                  -- 逗號分隔的主導組別；空字串＝全部
+    thread_id      INTEGER,               -- forum topic id（在哪個 topic 設定就送到哪；非 forum 為 NULL）
+    updated_by     INTEGER,               -- 管理員 user id
+    updated_at     TEXT                   -- ISO8601（UTC）
+);
+
+-- NT-7：排程狀態鍵值表（目前僅存最後一次成功送出的預告日期，避免重啟後重送）
+CREATE TABLE IF NOT EXISTS notify_state (
+    key            TEXT PRIMARY KEY,
+    value          TEXT,
+    updated_at     TEXT                   -- ISO8601（UTC）
+);
 """
 
 Params = Sequence[Any]

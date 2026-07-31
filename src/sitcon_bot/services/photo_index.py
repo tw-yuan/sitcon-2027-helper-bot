@@ -181,7 +181,10 @@ class GoogleSheetPhotoFetcher:
 
 
 class PhotoIndexService:
-    """TTL 快取的照片索引；載入失敗時沿用舊快取（EC-11）。"""
+    """TTL 快取的照片索引；載入失敗時沿用舊快取（EC-11）。
+
+    single-flight：快取冷掉時同時進來的多個查詢只會抓一次 Sheets。
+    """
 
     def __init__(self, fetcher: PhotoFetcher, ttl_seconds: int, clock: _Clock = time.monotonic) -> None:
         self._fetcher = fetcher
@@ -189,6 +192,7 @@ class PhotoIndexService:
         self._clock = clock
         self._cache: PhotoIndex | None = None
         self._at: float | None = None
+        self._lock = asyncio.Lock()
 
     def _fresh(self) -> bool:
         return self._cache is not None and self._at is not None and (self._clock() - self._at) < self._ttl
@@ -197,6 +201,14 @@ class PhotoIndexService:
         if self._fresh() and not force:
             assert self._cache is not None
             return self._cache
+        async with self._lock:
+            # 等鎖期間可能已有人載好；force（/reload）例外，一定重抓。
+            if self._fresh() and not force:
+                assert self._cache is not None
+                return self._cache
+            return await self._fetch_locked()
+
+    async def _fetch_locked(self) -> PhotoIndex:
         try:
             header, rows = await self._fetcher.fetch()
             self._cache = PhotoIndex(parse_photos(header, rows))

@@ -18,12 +18,14 @@ corpora=allDrives + includeItemsFromAllDrives + supportsAllDrives。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from ..concurrency import KeyedLock
 from .google_http import GOOGLE_NUM_RETRIES, build_google_service, request_http
 
 log = logging.getLogger(__name__)
@@ -128,6 +130,8 @@ class DriveSearchService:
         self._clock = clock
         self._folder_cache: dict[str, tuple[str, str | None]] = {}  # id -> (name, parent_id)
         self._cache_at: float | None = None
+        # single-flight：併發解析多個檔案的祖先鏈時，同一個資料夾只查一次
+        self._folder_lock = KeyedLock()
 
     def _maybe_expire_cache(self) -> None:
         if self._cache_at is None or (self._clock() - self._cache_at) >= self._ttl:
@@ -142,13 +146,17 @@ class DriveSearchService:
         cached = self._folder_cache.get(folder_id)
         if cached is not None:
             return cached
-        data = await self._gateway.get_folder(folder_id)
-        if data is None:
-            return None
-        parents = data.get("parents") or []
-        entry = (data.get("name", ""), parents[0] if parents else None)
-        self._folder_cache[folder_id] = entry
-        return entry
+        async with self._folder_lock(folder_id):
+            cached = self._folder_cache.get(folder_id)  # 等鎖期間可能已被別人填好
+            if cached is not None:
+                return cached
+            data = await self._gateway.get_folder(folder_id)
+            if data is None:
+                return None
+            parents = data.get("parents") or []
+            entry = (data.get("name", ""), parents[0] if parents else None)
+            self._folder_cache[folder_id] = entry
+            return entry
 
     async def _scope_path(self, parent_id: str, selected_root_ids: set[str]) -> str | None:
         """沿 parents 走到某個選定範圍根；在範圍內回傳自範圍根起算的資料夾路徑，否則 None。"""
@@ -183,16 +191,19 @@ class DriveSearchService:
         selected_root_ids = {self._scope[n] for n in selected}
 
         raw = await self._gateway.search_files(build_search_query(keywords))
-        matches: list[DriveFile] = []
-        for f in raw:
-            parents = f.get("parents") or []
-            parent = parents[0] if parents else None
-            if parent is None:
-                continue
-            folder_path = await self._scope_path(parent, selected_root_ids)
-            if folder_path is None:
-                continue  # 範圍外，DR-1
-            matches.append(self._to_file(f, folder_path))
+        # 每個命中檔案都要沿 parents 往上走才知道在不在範圍內，逐檔序列做會累積成幾十次
+        # 往返（20 筆命中 × 最深 12 層）。改為併發解析：搭配 _folder 的 single-flight，
+        # 實際 API 次數不變（共用祖先只查一次），但延遲從「相加」變成「取最深的那條」。
+        candidates = [(f, (f.get("parents") or [None])[0]) for f in raw]
+        candidates = [(f, parent) for f, parent in candidates if parent]
+        paths = await asyncio.gather(
+            *(self._scope_path(parent, selected_root_ids) for _f, parent in candidates)
+        )
+        matches: list[DriveFile] = [
+            self._to_file(f, path)
+            for (f, _parent), path in zip(candidates, paths, strict=True)
+            if path is not None  # None = 範圍外，DR-1
+        ]
 
         total = len(matches)
         page = matches[offset : offset + limit]
@@ -322,23 +333,15 @@ class GoogleDriveGateway:
         return str(data)
 
     async def search_files(self, query: str) -> list[dict[str, Any]]:
-        import asyncio
-
         return await asyncio.to_thread(self._search_sync, query)
 
     async def get_folder(self, folder_id: str) -> dict[str, Any] | None:
-        import asyncio
-
         return await asyncio.to_thread(self._get_folder_sync, folder_id)
 
     async def get_file(self, file_id: str) -> dict[str, Any] | None:
-        import asyncio
-
         return await asyncio.to_thread(self._get_file_sync, file_id)
 
     async def fetch_text(self, file_id: str, export_mime: str | None) -> str:
-        import asyncio
-
         return await asyncio.to_thread(self._fetch_text_sync, file_id, export_mime)
 
 

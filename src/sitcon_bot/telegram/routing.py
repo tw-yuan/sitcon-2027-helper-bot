@@ -30,10 +30,16 @@ class Action(Enum):
     CMD_RELOAD = auto()
     CMD_HELP = auto()
     CMD_START = auto()
+    CMD_NOTIFY_ON = auto()  # NT-4：本群訂閱里程碑預告（可指定組別）
+    CMD_NOTIFY_OFF = auto()
+    CMD_NOTIFY_LIST = auto()
+    CMD_NOTIFY_TEST = auto()
     BUSINESS = auto()  # 交給 agent 處理
 
 
-ADMIN_COMMANDS = frozenset({"authorize", "revoke", "list_groups", "reload"})
+ADMIN_COMMANDS = frozenset(
+    {"authorize", "revoke", "list_groups", "reload", "notify_on", "notify_off", "notify_list", "notify_test"}
+)
 PUBLIC_COMMANDS = frozenset({"help", "start"})
 
 _COMMAND_ACTION = {
@@ -42,6 +48,10 @@ _COMMAND_ACTION = {
     "reload": Action.CMD_RELOAD,
     "help": Action.CMD_HELP,
     "start": Action.CMD_START,
+    "notify_on": Action.CMD_NOTIFY_ON,
+    "notify_off": Action.CMD_NOTIFY_OFF,
+    "notify_list": Action.CMD_NOTIFY_LIST,
+    "notify_test": Action.CMD_NOTIFY_TEST,
 }
 
 
@@ -62,6 +72,18 @@ def parse_command(text: str, bot_username: str | None) -> str | None:
     if not name:
         return None
     return name.lower()
+
+
+def command_args(text: str) -> str:
+    """取出指令後方的參數字串（`/notify_on 開發組, 行政組` → `開發組, 行政組`）。
+
+    非指令或無參數回空字串。指令名本身的解析仍由 parse_command 負責。
+    """
+    stripped = (text or "").lstrip()
+    if not stripped.startswith("/"):
+        return ""
+    parts = stripped[1:].split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
 
 
 def classify_trigger(

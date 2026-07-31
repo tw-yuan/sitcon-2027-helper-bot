@@ -37,8 +37,10 @@ GitLab 卡片、Google 共用雲端硬碟檔案搜尋、HackMD 筆記三大類�
 | GitLab 編輯/留言/查詢 | 「小石 把 #42 改成 Doing，加 0913 一籌」「小石 列出行政組還開著的卡」 |
 | 找文件（Drive＋HackMD 一起找，回覆只給檔名與連結） | 「小石 幫我找去年的場地租借合約」 |
 | HackMD 開/找/改筆記 | 「小石 開一份 0913 一籌的會議記錄」「小石 找上次討論贊助方案的文件」 |
+| 里程碑預告（主動通知） | 每天 23:00 自動預告隔天的籌備時程事項＋過期 GitLab 卡片提醒（tag assignee），可依群組設定要收哪些組別 |
 
-管理指令（管理員）：`/authorize`、`/revoke`、`/list_groups`、`/reload`；任何人：`/help`。
+管理指令（管理員）：`/authorize`、`/revoke`、`/list_groups`、`/reload`、
+`/notify_on`、`/notify_off`、`/notify_list`、`/notify_test`；任何人：`/help`。
 
 ---
 
@@ -65,7 +67,8 @@ GitLab 卡片、Google 共用雲端硬碟檔案搜尋、HackMD 筆記三大類�
 2. 啟用 **Google Drive API** 與 **Google Sheets API**。
 3. 把 service account 的 email **以檢視者（Viewer）共用**給：
    - 共用雲端硬碟（含「SITCON 2027」「SITCON 2026」兩資料夾）；
-   - 名冊 Google Sheet。
+   - 名冊 Google Sheet；
+   - 籌備時程表 Google Sheet（里程碑預告來源，`MILESTONE_SHEET_ID`）。
 4. 本系統只申請 `drive.readonly` + `spreadsheets.readonly`（最小權限，NFR-4）。
 
 > 名冊只讀取 `.env` 指定的**單一分頁**，且只擷取白名單欄位（`nickname`、`gitlab_username`、
@@ -104,6 +107,12 @@ cp .env.example .env
 - **LLM**：`LLM_PROVIDER=anthropic`（原生格式）或 `openai_compat`（OpenAI／OpenRouter，設 `LLM_BASE_URL`）。
   `LLM_MODEL` 依 provider 的模型字串（OpenRouter 例：`anthropic/claude-sonnet-4.6`）。
   `LLM_THINKING` = `off|low|medium|high`，統一對映到 adaptive thinking 的 effort（見下方[備註](#關於-thinking-設定)）。
+  `LLM_SERVICE_TIER`（僅 openai_compat，留空＝不帶）：Codex 的 fast mode 即 `fast`，官方 API 另有 `priority`／`flex`；
+  帳號或 gateway 不支援時 provider 會回 400，改回留空即可。
+- **併發**：訊息之間並行處理，`MAX_CONCURRENT_UPDATES`（預設 32）為同時處理的 update 上限、
+  `MAX_CONCURRENT_AGENT_TURNS`（預設 8）為同時進行的 agent 回合上限。
+  `SERIALIZE_PER_CHAT`（預設 `true`）讓同一對話（群＋forum topic）的 agent 回合依序跑，回覆順序不亂；
+  設 `false` 則同群也完全並行（SPEC EC-16）。不同群／不同 topic 一律並行。
 - Google service account 金鑰以檔案掛載（`GOOGLE_SA_JSON_PATH`，compose 預設 `/run/secrets/google-sa.json`）。
 
 ---
@@ -143,9 +152,39 @@ docker compose restart
 
 1. 管理員在**目標群組**內輸入 `/authorize` → 該群組進入授權清單。
 2. 群組成員即可用 @提及／reply／「小石 …」開頭觸發；輸入 `/help` 看範例。
-3. 管理：`/list_groups`（列出授權群組）、`/revoke`（撤銷本群組）、`/reload`（重載名冊/label/HackMD/Drive/職掌文件快取）。
+3. 管理：`/list_groups`（列出授權群組）、`/revoke`（撤銷本群組）、`/reload`（重載名冊/label/HackMD/Drive/時程表/職掌文件快取）。
 
 未授權群組與私訊一律不提供功能（私訊回固定說明；未授權群組沉默，唯一例外是管理員的 `/authorize`）。
+
+### 里程碑預告（NT-*）
+
+每天 **23:00（Asia/Taipei）** 自動把**隔天**的籌備時程里程碑（一行一筆 `[組別] 事件名稱`）推到有訂閱的群組，
+並附上**仍未關閉且已到期**（含當天到期）的 GitLab 卡片提醒，tag 到 assignee。
+里程碑資料來源是 [SITCON 2027 籌備時程表](https://docs.google.com/spreadsheets/d/1esryzLBpnE51NIUU4-prwG0RrnG3W4eYQJ6FZSigFPQ/edit)
+的「工作表1」（`MILESTONE_SHEET_ID` / `MILESTONE_SHEET_GID`），**須把該試算表分享給 service account（檢視者即可）**。
+
+管理員在**目標群組**（forum 群組請在要收通知的 topic 裡）執行：
+
+| 指令 | 說明 |
+|---|---|
+| `/notify_on` | 本群收**全部組別**的里程碑 |
+| `/notify_on 開發組, 行政組` | 只收這幾組（分隔用逗號／頓號／空白皆可，「開發」＝「開發組」） |
+| `/notify_off` | 本群取消訂閱 |
+| `/notify_list` | 列出所有訂閱群組與其組別 |
+| `/notify_test` | 立刻預覽本群明天會收到的內容（不影響排程） |
+
+行為細節：
+
+- 指定組別時，**全體**與**重要日期**的事項一律附帶送出（`MILESTONE_ALWAYS_TEAMS` 可調）。
+- 「隔天有事」＝當天是單日事件、多日事件的**起始日**或**最後一天**；中間日不重複打擾。
+- 卡片提醒收錄 `state=opened` 且 `due date ≤ 當天` 的卡，過期最久在前、最多 20 張；assignee 依名冊對應
+  Telegram 帳號來 tag（查無對應則顯示名稱＋「無 TG 對應」）。卡片**不分組別**，所有訂閱群都收到。
+- 該群隔天沒有相關事項、也沒有過期卡片就不送（`MILESTONE_NOTIFY_WHEN_EMPTY=true` 可改）。
+- 已送出的日期記在 DB，重啟不會重送；若 23:00 剛好在重啟中，1 小時內啟動會補送（`MILESTONE_NOTIFY_CATCHUP_MINUTES`）。
+- GitLab 暫時取不到卡片時該日只送里程碑段；名冊取不到時卡片照送、只是 tag 退化為顯示名稱。
+- 時程表改了不必重啟，快取 1 小時（`CACHE_TTL_MILESTONES`），要立即生效就 `/reload`。
+- 整條路徑不經 LLM，內容照表原文送出（HTML escape）。
+- `/revoke` 撤銷授權時會一併移除該群訂閱。
 
 ---
 

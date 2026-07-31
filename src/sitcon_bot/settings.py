@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_thinking: ThinkingLevel = "high"
     llm_max_tool_iterations: int = 8
+    # openai_compat 專用；留空＝不帶。Codex 的 fast mode 即 service_tier="fast"，
+    # 官方 API 另有 priority／flex。不支援時 provider 會回 400，改回留空即可。
+    llm_service_tier: str = ""
 
     # --- GitLab ---
     gitlab_url: str = "https://gitlab.com"
@@ -57,6 +60,20 @@ class Settings(BaseSettings):
     # 照片索引（Flickr Photo Finder 試算表；須分享給 service account）
     photo_index_sheet_id: str = "1JM2QzJo5kpeILZPyTSE6gUK3z-FyRcaGhPJlYE-FMbs"
     photo_index_tab: str = "photos"
+    # 籌備時程表（里程碑預告來源；須分享給 service account，唯讀即可）
+    milestone_sheet_id: str = "1esryzLBpnE51NIUU4-prwG0RrnG3W4eYQJ6FZSigFPQ"
+    milestone_sheet_gid: int = 0  # 「工作表1」；以 gid 解析分頁名再讀值
+
+    # --- 里程碑預告（NT-*）---
+    milestone_notify_enabled: bool = True
+    milestone_notify_hour: int = 23  # Asia/Taipei，預告「隔天」的事項＋當日過期卡片提醒
+    milestone_notify_minute: int = 0
+    # 錯過到點（如剛好在重啟）時的補送視窗；超過就跳過該日，不半夜打擾
+    milestone_notify_catchup_minutes: int = 60
+    # 不論訂閱哪幾組都會收到的組別（這些本來就是全員共同事項）
+    milestone_always_teams: str = "全體,重要日期"
+    # 隔天沒有任何事項時是否仍送出「今天沒事」；預設不送，避免每日噪音
+    milestone_notify_when_empty: bool = False
 
     # --- HackMD ---
     hackmd_token: SecretStr
@@ -74,6 +91,18 @@ class Settings(BaseSettings):
     cache_ttl_drive_tree: int = 1800
     cache_ttl_roster: int = 3600
     cache_ttl_photos: int = 21600  # 照片索引極少變動 → 預設 6 小時
+    cache_ttl_milestones: int = 3600  # 籌備時程表
+
+    # --- 併發 ---
+    # 同時處理的 update 上限（PTB concurrent_updates）。非觸發訊息幾乎不佔用時間，
+    # 設寬鬆即可；真正吃資源的 agent 回合另由 max_concurrent_agent_turns 控管。
+    max_concurrent_updates: int = 32
+    # 同時進行的 agent 回合上限（跨群共用）：擋住突發流量打爆 LLM／GitLab 速率限制。
+    max_concurrent_agent_turns: int = 8
+    # 同一對話（chat + forum topic）的 agent 回合是否序列化。
+    # True（預設）＝同群訊息依序回、順序不亂；False＝完全並行（SPEC EC-16 的原始要求）。
+    # 純 reply-chain 脈絡下同群並行沒有正確性問題（一訊息一 session），差別只在回覆順序。
+    serialize_per_chat: bool = True
 
     # --- 其他 ---
     team_charter_path: str = "role.md"  # 職掌文件（RO-8）；供 LLM 判斷組別；/reload 重載
@@ -106,6 +135,11 @@ class Settings(BaseSettings):
         return list(self.drive_scope_map)
 
     @property
+    def milestone_always_team_list(self) -> list[str]:
+        """不論訂閱哪幾組都會收到的組別（逗號分隔）。"""
+        return [s.strip() for s in self.milestone_always_teams.split(",") if s.strip()]
+
+    @property
     def hackmd_search_folder_list(self) -> list[str]:
         """HackMD 搜尋範圍的年度資料夾名單（逗號分隔）。"""
         return [s.strip() for s in self.hackmd_search_year_folders.split(",") if s.strip()]
@@ -134,7 +168,8 @@ class Settings(BaseSettings):
             "─────────────────────────────",
             f"  Telegram      : token={mask(self.telegram_bot_token)}  admin_id={self.telegram_admin_id}",
             f"  觸發詞         : {self.bot_trigger_name}",
-            f"  LLM           : provider={self.llm_provider}  model={self.llm_model}  thinking={self.llm_thinking}",
+            f"  LLM           : provider={self.llm_provider}  model={self.llm_model}  thinking={self.llm_thinking}"
+            f"  tier={self.llm_service_tier or '<預設>'}",
             f"                  api_key={mask(self.llm_api_key)}  base_url={self.llm_base_url or '<預設>'}",
             f"  GitLab        : {self.gitlab_url}  project={self.gitlab_project}  token={mask(self.gitlab_token)}",
             f"  Drive         : drive_id={self.drive_shared_drive_id}  scope={self.drive_scope_folder_names}",
@@ -146,7 +181,14 @@ class Settings(BaseSettings):
             f"  快取 TTL(s)   : labels={self.cache_ttl_labels} hackmd={self.cache_ttl_hackmd} "
             f"drive={self.cache_ttl_drive_tree} roster={self.cache_ttl_roster} photos={self.cache_ttl_photos}",
             f"  照片索引       : sheet={self.photo_index_sheet_id[:12]}… tab={self.photo_index_tab}",
+            f"  里程碑預告     : {'啟用' if self.milestone_notify_enabled else '停用'}  "
+            f"每天 {self.milestone_notify_hour:02d}:{self.milestone_notify_minute:02d}（隔天里程碑＋過期卡片）  "
+            f"sheet={self.milestone_sheet_id[:12]}… gid={self.milestone_sheet_gid}  "
+            f"必收組別={self.milestone_always_team_list}",
             f"  反問續接       : ttl={self.context_ttl_seconds}s（純 reply-chain：回覆訊息才帶脈絡）",
+            f"  併發          : updates={self.max_concurrent_updates} "
+            f"agent回合={self.max_concurrent_agent_turns} "
+            f"同一對話={'序列化' if self.serialize_per_chat else '並行（EC-16）'}",
             f"  日誌等級       : {self.log_level}",
             "─────────────────────────────",
         ]

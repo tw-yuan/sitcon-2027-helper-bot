@@ -57,6 +57,10 @@ sitcon-bot/
 │   │   └── formatting.py        # 回覆組裝、HTML parse mode、escape
 │   ├── auth/
 │   │   └── groups.py            # 授權清單（AUTH-*）
+│   ├── notify/                  # 里程碑預告（NT-*）；不經 LLM
+│   │   ├── subscriptions.py     # 每群訂閱哪些組別＋排程狀態（NT-4/NT-7）
+│   │   ├── digest.py            # 預告訊息組裝（純函式，NT-5）
+│   │   └── scheduler.py         # 每日到點／去重／補送（NT-6～NT-8）
 │   ├── agent/
 │   │   ├── core.py              # tool-calling loop
 │   │   ├── prompts.py           # system prompt 組裝
@@ -70,6 +74,7 @@ sitcon-bot/
 │   │   ├── gitlab_client.py     # label 白名單、scoped 互斥、issue CRUD（無 delete/state）
 │   │   ├── drive_client.py      # 搜尋（僅 metadata）＋讀內容（範圍內、只讀文字）
 │   │   ├── sheets_roster.py     # 名冊載入（RO-2 欄位白名單在這裡強制）
+│   │   ├── milestone_schedule.py # 籌備時程表載入與當日查詢（NT-1～NT-3）
 │   │   ├── hackmd_client.py     # notes/folders/templates
 │   │   └── llm/
 │   │       ├── base.py          # LLMClient 介面（tools、thinking）
@@ -119,6 +124,16 @@ DRIVE_SHARED_DRIVE_ID=0AIx9UW7aBiDgUk9PVA
 DRIVE_SCOPE_FOLDERS=SITCON 2027,SITCON 2026        # DR-1
 ROSTER_SHEET_ID=1BiK-zMplJqSakQNfdQeDkwe2BMk21ngbm0xGEv8L5e4
 ROSTER_SHEET_GID=1822407485                         # RO-1：以 gid 解析分頁名再讀值
+MILESTONE_SHEET_ID=1esryzLBpnE51NIUU4-prwG0RrnG3W4eYQJ6FZSigFPQ   # NT-1 籌備時程表
+MILESTONE_SHEET_GID=0
+
+# --- 里程碑預告（NT-*）---
+MILESTONE_NOTIFY_ENABLED=true
+MILESTONE_NOTIFY_HOUR=20             # 每天此時預告「隔天」
+MILESTONE_NOTIFY_MINUTE=0
+MILESTONE_NOTIFY_CATCHUP_MINUTES=180 # 錯過到點的補送視窗
+MILESTONE_ALWAYS_TEAMS=全體,重要日期
+MILESTONE_NOTIFY_WHEN_EMPTY=false
 
 # --- HackMD ---
 HACKMD_TOKEN=                    # team 成員個人 API token
@@ -133,6 +148,7 @@ CACHE_TTL_LABELS=600
 CACHE_TTL_HACKMD=600
 CACHE_TTL_DRIVE_TREE=1800
 CACHE_TTL_ROSTER=3600
+CACHE_TTL_MILESTONES=3600
 
 # --- 其他 ---
 TZ=Asia/Taipei
@@ -191,6 +207,16 @@ DB_PATH=/data/sitcon_bot.sqlite3
 - 4096 字分段（TRIG-8）；每段皆 reply 至觸發訊息並帶 `message_thread_id`（TRIG-5）。
 - 處理中每 5 秒重送 `sendChatAction(typing)`（NFR-1）。
 
+### 4.7 里程碑預告（NT-*）
+
+- 唯一的主動推播路徑，**完全不經 LLM**：Sheet → 解析 → 過濾 → HTML escape → `sendMessage`。
+- `services/milestone_schedule.py` 只負責「讀表＋查某日有什麼」，與通知無關，之後要做「小石 下週有什麼里程碑」可直接複用。
+- 排程用自寫的 60 秒 tick（`notify/scheduler.py`），不引入 APScheduler：每次 tick 都重算「今天的到點時刻」，
+  對休眠、時鐘跳動、DST 天然免疫；`MilestoneNotifier.tick(now)` 可注入時間，測試不必等真實時間。
+- 冪等靠 `notify_state` 存「已送出的目標日期」；讀表失敗時**不寫狀態**，讓補送視窗內的下一個 tick 重試。
+- 三方循環相依（notifier 要 gateway 送訊、gateway 要 commands、commands 要 notifier）在 `app.py`
+  以晚綁定的 holder 解開；notifier 先等 `gateway.ready` 才開始 tick。
+
 ---
 
 ## 5. 實作順序與任務拆分（依依賴排序；每項獨立可交付）
@@ -248,7 +274,7 @@ DoD：照 README 在乾淨環境走一遍可完成 SPEC 16.5。
 5. **Telegram**：privacy off 後才收得到一般訊息（TRIG-2）；forum 群組要回帶 `message_thread_id`；HTML mode 下使用者輸入須 escape；bot 重啟時用 `drop_pending_updates=False` 以免漏訊息（但過期觸發 >5 分鐘可丟棄）。
 6. **LLM**：system prompt 內的 label 清單與名冊表每輪重組（吃快取）；工具結果塞回時裁剪過長內容（HackMD 內文 >20k 字截斷並註明）；OpenRouter 的 model 字串格式為 `anthropic/claude-sonnet-4.6` 之類，README 註明三 provider 範例。
 7. **時間**：一律 `zoneinfo('Asia/Taipei')`；MMDD 補零；稽核 ts 存 UTC。
-8. **併發**：外部 client 全 async；同群組多觸發並行（EC-16），SQLite 寫入用單一 writer queue 避免鎖衝突。
+8. **併發**：外部 client 全 async；PTB 以 `concurrent_updates` 讓 update 之間並行（預設 1 是逐則處理）。跨群／跨 forum topic 一律並行；同一對話預設序列化以維持回覆順序，`SERIALIZE_PER_CHAT=false` 可切回 EC-16 的同群並行（純 reply-chain 脈絡下兩者都正確，差別只在順序）。全域另有 agent 回合上限擋突發流量。共用快取（label／名冊／照片索引／Drive 資料夾）皆為 single-flight，冷快取下併發請求只打一次外部 API。SQLite 為單一 aiosqlite 連線，天然序列化。
 
 ---
 
@@ -306,3 +332,4 @@ DoD：照 README 在乾淨環境走一遍可完成 SPEC 16.5。
 8. 不得以 prompt 取代第 4.4 章的程式層防線。
 9. 不得使用 webhook 模式、不得引入外部資料庫或訊息佇列（超出單機 SQLite 範圍）。
 10. 不得擴增 SPEC 第 15 章 Out of Scope 內的任何功能，即使實作成本看起來很低——先回報，由客戶決定。
+    （已回報並經客戶追加者：SPEC 10.4 里程碑預告 NT-*，2026-07-30。個別卡片到期提醒／催辦仍不做。）

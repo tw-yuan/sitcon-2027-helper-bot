@@ -8,6 +8,7 @@ from sitcon_bot.telegram.routing import (
     Action,
     Kind,
     classify_trigger,
+    command_args,
     parse_command,
     route,
 )
@@ -72,6 +73,20 @@ def test_command_takes_precedence_over_mention() -> None:
 )
 def test_parse_command(text: str, expected: str | None) -> None:
     assert parse_command(text, BOT) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("/notify_on 開發組, 行政組", "開發組, 行政組"),
+        (f"/notify_on@{BOT}  開發組 ", "開發組"),
+        ("/notify_on", ""),
+        ("/notify_on   ", ""),
+        ("不是指令 開發組", ""),
+    ],
+)
+def test_command_args(text: str, expected: str) -> None:
+    assert command_args(text) == expected
 
 
 # ------------------------------------------------------------------ #
@@ -139,13 +154,19 @@ def test_auth_group_start_anyone() -> None:
         ("revoke", Action.CMD_REVOKE),
         ("list_groups", Action.CMD_LIST_GROUPS),
         ("reload", Action.CMD_RELOAD),
+        ("notify_on", Action.CMD_NOTIFY_ON),
+        ("notify_off", Action.CMD_NOTIFY_OFF),
+        ("notify_list", Action.CMD_NOTIFY_LIST),
+        ("notify_test", Action.CMD_NOTIFY_TEST),
     ],
 )
 def test_auth_group_admin_commands(command: str, expected: Action) -> None:
     assert _route("group", True, True, Kind.COMMAND, command) is expected
 
 
-@pytest.mark.parametrize("command", ["revoke", "list_groups", "reload"])
+@pytest.mark.parametrize(
+    "command", ["revoke", "list_groups", "reload", "notify_on", "notify_off", "notify_list", "notify_test"]
+)
 def test_auth_group_nonadmin_admin_commands_silent(command: str) -> None:
     assert _route("group", False, True, Kind.COMMAND, command) is Action.IGNORE
 

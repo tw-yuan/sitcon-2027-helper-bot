@@ -14,6 +14,7 @@ github_*、本名、電話、匯款帳號…）於**載入層即丟棄**，永�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -201,7 +202,10 @@ _Clock = Callable[[], float]
 
 
 class RosterService:
-    """名冊快取服務：TTL（RO-6）、/reload 強制刷新、載入失敗沿用舊快取（EC-11）。"""
+    """名冊快取服務：TTL（RO-6）、/reload 強制刷新、載入失敗沿用舊快取（EC-11）。
+
+    single-flight：快取冷掉時多則訊息同時進來只會抓一次 Sheets，其餘等同一次結果。
+    """
 
     def __init__(
         self,
@@ -214,6 +218,7 @@ class RosterService:
         self._clock = clock
         self._roster: Roster | None = None
         self._loaded_at: float | None = None
+        self._lock = asyncio.Lock()
 
     def _is_fresh(self) -> bool:
         return (
@@ -226,6 +231,14 @@ class RosterService:
         if not force and self._is_fresh():
             assert self._roster is not None
             return self._roster
+        async with self._lock:
+            # 等鎖期間可能已有人載好；force（/reload）例外，一定重抓。
+            if not force and self._is_fresh():
+                assert self._roster is not None
+                return self._roster
+            return await self._fetch_locked()
+
+    async def _fetch_locked(self) -> Roster:
         try:
             _title, header, rows = await self._fetcher.fetch()
         except Exception as exc:
@@ -297,8 +310,6 @@ class GoogleSheetsFetcher:
         return title, header, rows
 
     async def fetch(self) -> tuple[str, list[str], list[list[str]]]:
-        import asyncio
-
         return await asyncio.to_thread(self._fetch_sync)
 
 

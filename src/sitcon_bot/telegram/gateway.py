@@ -2,6 +2,16 @@
 
 privacy off 後 bot 收到授權群組的所有訊息（TRIG-2），過濾僅在本機記憶體進行（TRIG-1）。
 非觸發訊息一律當場丟棄，不入儲存、不送 LLM（LOG-3）。
+
+併發模型（三層）：
+  1. PTB `concurrent_updates(n)`：update 之間並行，不再是處理完一則才拿下一則。
+     非觸發訊息與指令因此可以立刻回，不必排在別群的 agent 回合後面。
+  2. per-chat 序列化：同一個對話（chat + forum topic）的 agent 回合一次只跑一個，
+     維持回覆順序與 ask_user 續接語意；不同群／不同 topic 完全並行。
+     鎖只包住 agent 呼叫——👀 reaction 與 typing 在排隊期間就先送出，使用者看得到已收到。
+     （PTB 的 `BaseUpdateProcessor.process_update` 是 @final，全域 semaphore 一定在最外層，
+     所以 per-chat 鎖放在這裡而不是自訂 update processor，順便讓指令不受業務回合阻塞。）
+  3. 全域 agent 回合上限：擋突發流量打爆 LLM／GitLab 速率限制。
 """
 
 from __future__ import annotations
@@ -16,15 +26,23 @@ from typing import Any
 
 from telegram import InputMediaPhoto, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    AIORateLimiter,
+    Application,
+    ApplicationBuilder,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from ..agent.context import PendingStore
 from ..auth.groups import GroupStore
+from ..concurrency import KeyedLock
 from ..settings import Settings
 from ..storage.audit import AuditLog
 from .commands import CommandHandlers
 from .formatting import escape_html, split_message
-from .routing import Action, classify_trigger, route
+from .routing import Action, classify_trigger, command_args, route
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +113,12 @@ class Gateway:
         self._app: Application | None = None
         self.bot_id: int = 0
         self.bot_username: str | None = None
+        # 長輪詢就緒後設定；主動推播（里程碑預告）在此之前不得送出。
+        self.ready = asyncio.Event()
+        # 同一對話的 agent 回合序列化；鍵為 (chat_id, thread_id)，forum topic 之間可並行。
+        # 關掉即為 SPEC EC-16 的「同群組併發觸發彼此不阻塞」。
+        self._chat_lock = KeyedLock() if settings.serialize_per_chat else None
+        self._agent_slots = asyncio.Semaphore(max(1, settings.max_concurrent_agent_turns))
 
     # ------------------------------------------------------------------ #
     # 生命週期
@@ -102,7 +126,16 @@ class Gateway:
     async def run(self, stop: asyncio.Event) -> None:
         """建立 Application、getMe 檢查、開始長輪詢，直到 stop 被設定。"""
         token = self._settings.telegram_bot_token.get_secret_value()
-        app = ApplicationBuilder().token(token).build()
+        # concurrent_updates > 1 才會讓 PTB 對每則 update 開 task；預設 1 是嚴格逐則處理。
+        # rate_limiter：並行後同群送訊變密集，撞到 429 時自動退避重試——否則 _reply 會把
+        # 例外吞掉（見該方法），使用者等不到回覆卻沒有任何跡象。
+        app = (
+            ApplicationBuilder()
+            .token(token)
+            .concurrent_updates(max(2, self._settings.max_concurrent_updates))
+            .rate_limiter(AIORateLimiter(max_retries=3))
+            .build()
+        )
         app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, self._on_message))
         self._app = app
 
@@ -115,9 +148,11 @@ class Gateway:
         await app.start()
         await app.updater.start_polling(drop_pending_updates=False, allowed_updates=["message"])
         log.info("開始長輪詢；等待訊息…")
+        self.ready.set()
         try:
             await stop.wait()
         finally:
+            self.ready.clear()
             log.info("關閉 Telegram gateway…")
             for closer in (app.updater.stop, app.stop, app.shutdown):
                 with contextlib.suppress(Exception):
@@ -185,6 +220,21 @@ class Gateway:
             await self._reply(message, self._commands.help_text())
         elif action is Action.CMD_START:
             await self._reply(message, self._commands.start_text())
+        elif action is Action.CMD_NOTIFY_ON:
+            user = message.from_user
+            assert user is not None
+            await self._reply(
+                message,
+                await self._commands.notify_on(
+                    chat.id, chat.title, user.id, command_args(text), message.message_thread_id
+                ),
+            )
+        elif action is Action.CMD_NOTIFY_OFF:
+            await self._reply(message, await self._commands.notify_off(chat.id))
+        elif action is Action.CMD_NOTIFY_LIST:
+            await self._reply(message, await self._commands.notify_list())
+        elif action is Action.CMD_NOTIFY_TEST:
+            await self._reply(message, await self._commands.notify_test(chat.id))
         elif action is Action.BUSINESS:
             await self._handle_business(message, text)
 
@@ -213,8 +263,11 @@ class Gateway:
         # 收到即回饋：👀 reaction + typing（不送佔位訊息，避免使用者漏收最終回覆通知）
         await self._react(message, REACT_RECEIVED)
         try:
+            # typing 包在鎖外：排隊等前一則跑完的期間也持續顯示「輸入中」。
             async with self._typing(req.chat_id, req.thread_id):
-                result = await self._business_handler(req)
+                # 同一對話序列化 → 同群回覆保持順序；再取全域額度擋突發流量。
+                async with self._serialized(req.chat_id, req.thread_id), self._agent_slots:
+                    result = await self._business_handler(req)
         except Exception:  # 業務層未預期錯誤：回一則錯誤說明，不中斷長輪詢
             log.exception("業務處理未預期錯誤 chat_id=%s", req.chat_id)
             await self._reply(message, escape_html(GENERIC_ERROR))
@@ -266,6 +319,15 @@ class Gateway:
         return False
 
     @contextlib.asynccontextmanager
+    async def _serialized(self, chat_id: int, thread_id: int | None) -> AsyncIterator[None]:
+        """同一對話的 agent 回合互斥；serialize_per_chat=False 時直接放行（EC-16）。"""
+        if self._chat_lock is None:
+            yield
+            return
+        async with self._chat_lock((chat_id, thread_id)):
+            yield
+
+    @contextlib.asynccontextmanager
     async def _typing(self, chat_id: int, thread_id: int | None) -> AsyncIterator[None]:
         """處理期間持續送出 typing 指示（TRIG-9 / NFR-1）。"""
         task = asyncio.create_task(self._typing_loop(chat_id, thread_id))
@@ -312,6 +374,30 @@ class Gateway:
                     reply_parameters=reply_params,
                     message_thread_id=message.message_thread_id,
                 )
+
+    async def send_html(self, chat_id: int, thread_id: int | None, text: str) -> bool:
+        """主動送出一則訊息（非回覆），供里程碑預告排程使用。
+
+        text 須為合法 HTML（呼叫端已 escape 動態內容）。逾長分段（TRIG-8）。
+        回傳是否至少送出一段；失敗只記錄不拋出——單一群組送不出去不該影響其他群組。
+        """
+        if self._app is None:
+            log.warning("Telegram 尚未就緒，略過主動推播 chat_id=%s", chat_id)
+            return False
+        ok = False
+        for chunk in split_message(text):
+            try:
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    message_thread_id=thread_id,
+                )
+                ok = True
+            except Exception:
+                log.warning("主動推播送出失敗 chat_id=%s thread_id=%s", chat_id, thread_id, exc_info=True)
+                break
+        return ok
 
     async def _react(self, message: Message, emoji: str) -> None:
         """對觸發訊息設定 emoji reaction（進度回饋）；失敗（如群組未開放該表情）靜默略過。"""

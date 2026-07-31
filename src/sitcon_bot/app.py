@@ -7,8 +7,10 @@ T2 SQLite ✅｜T3 gateway ✅｜T6 LLM ✅｜T7 agent ✅｜T8 GitLab 工具接
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
+from functools import partial
 from pathlib import Path
 
 from .agent.context import PendingStore
@@ -22,16 +24,20 @@ from .agent.tools.people_tools import build_people_tools
 from .agent.tools.photo_tools import build_photo_tools
 from .auth.groups import GroupStore
 from .domain.templates import load_template_store
+from .notify.cards import collect_overdue_cards
+from .notify.scheduler import MilestoneNotifier
+from .notify.subscriptions import NotifyStateStore, SubscriptionStore
 from .services.drive_client import build_drive_service
 from .services.gitlab_client import build_gitlab_client
 from .services.hackmd_client import build_hackmd_client
 from .services.llm.base import build_llm_client
+from .services.milestone_schedule import build_milestone_schedule_service
 from .services.photo_index import build_photo_index_service
 from .services.sheets_roster import RosterUnavailableError, build_roster_service
 from .settings import Settings
 from .storage.audit import AuditLog
 from .storage.db import Database
-from .telegram.commands import CommandHandlers
+from .telegram.commands import CommandHandlers, MilestoneDeps
 from .telegram.gateway import BusinessRequest, BusinessResult, Gateway
 
 log = logging.getLogger(__name__)
@@ -76,6 +82,12 @@ async def run(settings: Settings) -> None:
         settings.photo_index_tab,
         settings.cache_ttl_photos,
     )
+    milestones = build_milestone_schedule_service(
+        settings.google_sa_json_path,
+        settings.milestone_sheet_id,
+        settings.milestone_sheet_gid,
+        settings.cache_ttl_milestones,
+    )
     hackmd = build_hackmd_client(settings)
     templates = await asyncio.to_thread(load_template_store)
 
@@ -85,21 +97,25 @@ async def run(settings: Settings) -> None:
     else:
         log.info("已載入職掌文件：%s（%d 字）", settings.team_charter_path, len(charter["text"]))
 
-    async def prompt_provider() -> PromptData:
-        labels: list[str] = []
+    async def _labels() -> list[str]:
         try:
-            labels = (await gitlab.get_label_index()).names
+            return (await gitlab.get_label_index()).names
         except Exception:
             log.warning("label 白名單載入失敗", exc_info=True)
-        rows: list[dict[str, object]] = []
-        available = True
+            return []
+
+    async def _roster_rows() -> tuple[list[dict[str, object]], bool]:
         try:
-            rows = (await roster.get()).to_llm_rows()
+            return (await roster.get()).to_llm_rows(), True
         except RosterUnavailableError:
-            available = False
+            return [], False
         except Exception:
             log.warning("名冊載入失敗", exc_info=True)
-            available = False
+            return [], False
+
+    async def prompt_provider() -> PromptData:
+        # 兩者都吃快取，但冷快取／TTL 到期時是兩趟外部 I/O；併發拿可省掉一趟的等待。
+        labels, (rows, available) = await asyncio.gather(_labels(), _roster_rows())
         return PromptData(labels=labels, roster_rows=rows, charter=charter["text"], roster_available=available)
 
     tools = ToolRegistry(
@@ -149,16 +165,49 @@ async def run(settings: Settings) -> None:
             n_photos = len(await photos.reload())
         except Exception:
             log.warning("照片索引重載失敗", exc_info=True)
+        n_milestones = 0
+        try:
+            n_milestones = len(await milestones.reload())
+        except Exception:
+            log.warning("籌備時程表重載失敗", exc_info=True)
         hackmd.reload()
         await asyncio.to_thread(templates.reload)
         charter["text"] = await asyncio.to_thread(_load_charter, settings.team_charter_path)
         charter_state = "已載入" if charter["text"] else "（缺）"
         return (
             f"label {n_labels} 個、名冊 {n_roster} 人、照片索引 {n_photos} 張、"
-            f"Drive／HackMD 快取已重載、職掌文件{charter_state}"
+            f"里程碑 {n_milestones} 筆、Drive／HackMD 快取已重載、職掌文件{charter_state}"
         )
 
-    commands = CommandHandlers(settings, groups, reload_cb=reload_cb)
+    # 里程碑預告（NT-*）：notifier 需要 gateway 送訊、gateway 需要 commands、commands 需要 notifier，
+    # 三者互相依賴 → 送訊以「晚綁定」的 holder 解開，gateway 建好後填入。
+    gateway_ref: dict[str, Gateway | None] = {"gw": None}
+
+    async def send_push(chat_id: int, thread_id: int | None, text: str) -> bool:
+        gw = gateway_ref["gw"]
+        return await gw.send_html(chat_id, thread_id, text) if gw is not None else False
+
+    notifier: MilestoneNotifier | None = None
+    milestone_deps: MilestoneDeps | None = None
+    if settings.milestone_notify_enabled:
+        notifier = MilestoneNotifier(
+            schedule=milestones,
+            subscriptions=SubscriptionStore(db),
+            state=NotifyStateStore(db),
+            sender=send_push,
+            cards=partial(collect_overdue_cards, gitlab, roster),  # NT-11 過期卡片提醒
+            tz=settings.tz,
+            hour=settings.milestone_notify_hour,
+            minute=settings.milestone_notify_minute,
+            catchup_minutes=settings.milestone_notify_catchup_minutes,
+            always_teams=settings.milestone_always_team_list,
+            send_when_empty=settings.milestone_notify_when_empty,
+        )
+        milestone_deps = MilestoneDeps(
+            subscriptions=SubscriptionStore(db), schedule=milestones, notifier=notifier
+        )
+
+    commands = CommandHandlers(settings, groups, reload_cb=reload_cb, milestones=milestone_deps)
 
     async def business_handler(req: BusinessRequest) -> BusinessResult:
         result = await agent.handle(
@@ -184,6 +233,7 @@ async def run(settings: Settings) -> None:
         )
 
     gateway = Gateway(settings, groups, audit, commands, business_handler, pending_store=pending_store)
+    gateway_ref["gw"] = gateway
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -193,9 +243,19 @@ async def run(settings: Settings) -> None:
         except NotImplementedError:
             pass
 
+    notify_task = (
+        asyncio.create_task(notifier.run(stop, ready=gateway.ready), name="milestone-notifier")
+        if notifier is not None
+        else None
+    )
     try:
         await gateway.run(stop)
     finally:
+        if notify_task is not None:
+            stop.set()  # gateway 若因例外結束，排程也要跟著收
+            notify_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await notify_task
         await hackmd.aclose()
         await db.close()
         log.info("小石結束。")

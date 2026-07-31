@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import date
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..domain.matching import nearest_labels, normalize_label
@@ -255,20 +256,30 @@ class GitLabClient:
         self._max_retries = max_retries
         self._label_index: LabelIndex | None = None
         self._labels_at: float | None = None
+        self._labels_lock = asyncio.Lock()
 
     # -------------------------- label 白名單 -------------------------- #
-    async def get_label_index(self, *, force: bool = False) -> LabelIndex:
-        fresh = (
+    def _labels_fresh(self) -> bool:
+        return (
             self._label_index is not None
             and self._labels_at is not None
             and (self._clock() - self._labels_at) < self._label_ttl
         )
-        if force or not fresh:
+
+    async def get_label_index(self, *, force: bool = False) -> LabelIndex:
+        """single-flight：快取冷掉時同時進來的多個回合只打一次 list_labels。"""
+        if not force and self._labels_fresh():
+            assert self._label_index is not None
+            return self._label_index
+        async with self._labels_lock:
+            # 等鎖期間可能已有人載好；force（/reload）例外，一定重抓。
+            if not force and self._labels_fresh():
+                assert self._label_index is not None
+                return self._label_index
             names = await self._call(self._b.list_labels)
             self._label_index = LabelIndex(names)
             self._labels_at = self._clock()
-        assert self._label_index is not None
-        return self._label_index
+            return self._label_index
 
     async def reload_labels(self) -> int:
         idx = await self.get_label_index(force=True)
@@ -446,6 +457,18 @@ class GitLabClient:
         issues = [Issue.from_raw(r) for r in raw]
         if open_only:
             issues = [i for i in issues if "Status::Review" not in i.labels]  # GL-22
+        return issues
+
+    async def overdue_issues(self, cutoff: date) -> list[Issue]:
+        """NT-11 卡片提醒：開啟中且 due_date ≤ cutoff 的卡片，過期最久在前。
+
+        以 due_date=any 讓 GitLab 只回有到期日的卡，cutoff 比對在本地做——
+        伺服器端 `due_date=overdue` 以 UTC 判日且不含當日，與台北時區的語意對不上。
+        """
+        raw = await self._call(self._b.list_issues, {"state": "opened", "due_date": "any"})
+        limit = cutoff.isoformat()
+        issues = [i for i in (Issue.from_raw(r) for r in raw) if i.due_date and i.due_date <= limit]
+        issues.sort(key=lambda i: (i.due_date or "", i.iid))
         return issues
 
     # -------------------------- 重試與錯誤分類 -------------------------- #

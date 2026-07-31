@@ -135,6 +135,8 @@ class FakeBackend:
         for iss in self.issues.values():
             if filters.get("state") == "opened" and iss["state"] != "opened":
                 continue
+            if filters.get("due_date") == "any" and not iss.get("due_date"):
+                continue
             if filters.get("labels"):
                 want = set(filters["labels"].split(","))
                 if not want.issubset(set(iss["labels"])):
@@ -278,6 +280,31 @@ async def test_open_only_excludes_review_and_closed() -> None:
     issues = await _client(b).search_issues(label_filters=["Team::行政組"], open_only=True)
     assert [i.iid for i in issues] == [1]  # Review 排除、closed 排除
     assert b.last_filters["state"] == "opened"
+
+
+# ------------------------------------------------------------------ #
+# NT-11：過期卡片查詢
+# ------------------------------------------------------------------ #
+def _bare_issue(iid: int, due: str | None, state: str = "opened") -> dict[str, Any]:
+    return {"iid": iid, "web_url": f"u{iid}", "title": f"t{iid}", "description": None,
+            "labels": [], "assignees": [], "due_date": due, "state": state}
+
+
+async def test_overdue_issues_filters_and_sorts() -> None:
+    from datetime import date
+
+    b = FakeBackend(LABELS)
+    b.issues = {
+        1: _bare_issue(1, "2026-08-01"),            # 未到期 → 排除
+        2: _bare_issue(2, "2026-07-31"),            # 當天到期 → 算過期
+        3: _bare_issue(3, "2026-07-25"),            # 過期最久 → 排最前
+        4: _bare_issue(4, "2026-07-28", "closed"),  # 已關閉 → 排除
+        5: _bare_issue(5, None),                    # 無到期日 → 排除
+        6: _bare_issue(6, "2026-07-25"),            # 同日到期 → 以 iid 穩定排序
+    }
+    issues = await _client(b).overdue_issues(date(2026, 7, 31))
+    assert [i.iid for i in issues] == [3, 6, 2]
+    assert b.last_filters == {"state": "opened", "due_date": "any"}
 
 
 # ------------------------------------------------------------------ #
