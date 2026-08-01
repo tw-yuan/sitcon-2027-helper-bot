@@ -279,32 +279,37 @@ class HackmdGetNoteTool(_HackMDToolBase):
 class MoveNoteArgs(BaseModel):
     note_id: str
     team: str | None = Field(
-        None, description="目標組別資料夾名（移到 <年度根>/<組別>）；只移到年度層級的會議文件時留空"
+        None, description="目標組別資料夾名（移到 <年度根>/<組別>）；目標不在組別底下時留空"
     )
     meeting_docs: bool = Field(
         False,
         description="是否放進「會議文件」：有 team → <年度根>/<組別>/會議文件；無 team → <年度根>/會議文件",
+    )
+    to_year_root: bool = Field(
+        False, description="移到年度根資料夾（SITCON 2027 最上層）；設 True 時忽略 team 與 meeting_docs"
     )
 
 
 class HackmdMoveNoteTool(_HackMDToolBase):
     name = "hackmd_move_note"
     description = (
-        "把既有 HackMD 筆記移到年度資料夾（SITCON 2027)內的其他資料夾：組別、會議文件、或組別/會議文件。"
-        "「會議文件」子夾會自動補建；組別資料夾不存在時不建立、不移動。只移動不刪除。"
+        "把既有 HackMD 筆記移到年度資料夾（SITCON 2027）內的其他位置：年度根、組別、會議文件、或組別/會議文件。"
+        "「會議文件」子夾會自動補建；組別資料夾不存在時不建立、不移動。只移動不刪除。移動約數秒後生效。"
     )
     args_model = MoveNoteArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
         assert isinstance(args, MoveNoteArgs)
-        if not args.team and not args.meeting_docs:
-            return "請指定要移到哪個資料夾（哪一組，或會議文件）。"
+        if not args.team and not args.meeting_docs and not args.to_year_root:
+            return "請指定要移到哪個資料夾（哪一組、會議文件、或年度根）。"
         try:
             year_root = await self._hm.find_folder(self._year_folder)
             if year_root is None:
                 return f"找不到「{self._year_folder}」年度資料夾，無法定位目標，未移動。"
             path = [self._year_folder]
-            if args.team:
+            if args.to_year_root:
+                target = year_root
+            elif args.team:
                 target = await self._hm.find_folder(args.team, parent_id=year_root.id)
                 if target is None:  # 組別資料夾不自動建立（HM-9 精神）
                     return f"{self._year_folder} 下找不到「{args.team}」資料夾，未移動。請確認組別名稱。"
@@ -321,7 +326,7 @@ class HackmdMoveNoteTool(_HackMDToolBase):
             return str(exc)
         except HackMDError as exc:
             return f"移動失敗：{exc}"
-        return f"✅ 已把筆記「{note.title}」移到 {'/'.join(path)}\n{note.url}"
+        return f"✅ 已把筆記「{note.title}」移到 {'/'.join(path)}（數秒內生效）\n{note.url}"
 
 
 # --------------------------------------------------------------------------- #

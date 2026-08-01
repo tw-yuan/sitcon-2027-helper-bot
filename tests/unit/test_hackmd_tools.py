@@ -274,6 +274,14 @@ async def test_move_to_team_meeting_subfolder_autocreates() -> None:
     assert hm.moved[0]["parent"] == hm.created_folders[0].id
 
 
+async def test_move_to_year_root() -> None:
+    tool, hm = _move_tool([_year(), Folder(id="dev", name="開發組", parent_folder_id="year")])
+    reply = await tool.run(MoveNoteArgs(note_id="n1", to_year_root=True), CTX)
+    assert "SITCON 2027" in reply and "已把筆記" in reply
+    assert hm.moved == [{"id": "n1", "parent": "year"}]
+    assert hm.created_folders == []
+
+
 async def test_move_to_year_meeting_folder() -> None:
     tool, hm = _move_tool([_year(), Folder(id="mf", name="會議文件", parent_folder_id="year")])
     reply = await tool.run(MoveNoteArgs(note_id="n1", meeting_docs=True), CTX)

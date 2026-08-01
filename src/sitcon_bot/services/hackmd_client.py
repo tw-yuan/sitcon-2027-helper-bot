@@ -256,7 +256,10 @@ class HackMDClient:
         self._notes = self._notes_at = None
 
     async def move_note(self, note_id: str, parent_folder_id: str) -> None:
-        """把筆記移到指定資料夾（歸檔調整；非刪除，不牴觸 HM-16）。"""
+        """把筆記移到指定資料夾（歸檔調整；非刪除，不牴觸 HM-16）。
+
+        API 回 202 非同步處理，實測約 5 秒內生效——移動後立刻 list_notes 可能還看到舊位置。
+        """
         await self._request(
             "PATCH", f"/teams/{self._team}/notes/{note_id}", {"parentFolderId": parent_folder_id}
         )
