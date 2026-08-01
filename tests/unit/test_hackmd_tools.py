@@ -10,8 +10,10 @@ from sitcon_bot.agent.tools.hackmd_tools import (
     GetNoteArgs,
     HackmdCreateNoteTool,
     HackmdGetNoteTool,
+    HackmdMoveNoteTool,
     HackmdSearchNotesTool,
     HackmdUpdateNoteTool,
+    MoveNoteArgs,
     SearchNotesArgs,
     UpdateNoteArgs,
     merge_tags,
@@ -44,6 +46,7 @@ class FakeHackMD:
         self.created: list[dict[str, Any]] = []
         self.created_folders: list[Folder] = []
         self.updated: list[dict[str, Any]] = []
+        self.moved: list[dict[str, Any]] = []
         self.note_contents: dict[str, str] = {}
         self._n = 0
 
@@ -78,6 +81,9 @@ class FakeHackMD:
 
     async def update_note(self, note_id: str, *, content=None, tags=None) -> None:
         self.updated.append({"id": note_id, "content": content, "tags": tags})
+
+    async def move_note(self, note_id: str, parent_folder_id: str) -> None:
+        self.moved.append({"id": note_id, "parent": parent_folder_id})
 
 
 def _tool(folders: list[Folder] | None = None) -> tuple[HackmdCreateNoteTool, FakeHackMD]:
@@ -243,6 +249,57 @@ async def test_search_scoped_to_year_folders() -> None:
     assert "命中 2 筆" in reply  # 僅 2027/2026
     assert "[a]" in reply and "[b]" in reply
     assert "[c]" not in reply and "[d]" not in reply
+
+
+# ------------------------------------------------------------------ #
+# 移動
+# ------------------------------------------------------------------ #
+def _move_tool(folders: list[Folder]) -> tuple[HackmdMoveNoteTool, FakeHackMD]:
+    hm = FakeHackMD(folders=folders)
+    return HackmdMoveNoteTool(hm, TEMPLATES, YEAR, "會議文件", "會議文件", "Asia/Taipei"), hm
+
+
+async def test_move_to_team_folder() -> None:
+    tool, hm = _move_tool([_year(), Folder(id="dev", name="開發組", parent_folder_id="year")])
+    reply = await tool.run(MoveNoteArgs(note_id="n1", team="開發組"), CTX)
+    assert "已把筆記" in reply and "SITCON 2027/開發組" in reply
+    assert hm.moved == [{"id": "n1", "parent": "dev"}]
+
+
+async def test_move_to_team_meeting_subfolder_autocreates() -> None:
+    tool, hm = _move_tool([_year(), Folder(id="dev", name="開發組", parent_folder_id="year")])
+    reply = await tool.run(MoveNoteArgs(note_id="n1", team="開發組", meeting_docs=True), CTX)
+    assert "SITCON 2027/開發組/會議文件" in reply
+    assert hm.created_folders and hm.created_folders[0].parent_folder_id == "dev"  # 子夾自動補建
+    assert hm.moved[0]["parent"] == hm.created_folders[0].id
+
+
+async def test_move_to_year_meeting_folder() -> None:
+    tool, hm = _move_tool([_year(), Folder(id="mf", name="會議文件", parent_folder_id="year")])
+    reply = await tool.run(MoveNoteArgs(note_id="n1", meeting_docs=True), CTX)
+    assert "SITCON 2027/會議文件" in reply
+    assert hm.moved == [{"id": "n1", "parent": "mf"}]
+
+
+async def test_move_missing_team_folder_does_not_move_or_create() -> None:
+    tool, hm = _move_tool([_year()])
+    reply = await tool.run(MoveNoteArgs(note_id="n1", team="開發組"), CTX)
+    assert "找不到「開發組」" in reply and "未移動" in reply
+    assert hm.moved == [] and hm.created_folders == []  # 組別資料夾不自動建立
+
+
+async def test_move_missing_year_root_does_not_move() -> None:
+    tool, hm = _move_tool([])
+    reply = await tool.run(MoveNoteArgs(note_id="n1", team="開發組"), CTX)
+    assert "年度資料夾" in reply and "未移動" in reply
+    assert hm.moved == []
+
+
+async def test_move_without_target_asks() -> None:
+    tool, hm = _move_tool([_year()])
+    reply = await tool.run(MoveNoteArgs(note_id="n1"), CTX)
+    assert "哪個資料夾" in reply
+    assert hm.moved == []
 
 
 # ------------------------------------------------------------------ #

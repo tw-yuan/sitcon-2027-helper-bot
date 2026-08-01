@@ -8,6 +8,7 @@
 
 tags：模板 frontmatter 的 tags 與程式自動 tags 合併，兩者皆帶（frontmatter + API tags 欄位）。
 搜尋兩階段（HM-10~12）、編輯整份寫回（HM-13~15）、不刪除（HM-16）。
+移動筆記限縮於年度根子樹內的既定歸檔位置（同建立規則）；組別資料夾一樣不自動建立。
 """
 
 from __future__ import annotations
@@ -273,6 +274,57 @@ class HackmdGetNoteTool(_HackMDToolBase):
 
 
 # --------------------------------------------------------------------------- #
+# 移動
+# --------------------------------------------------------------------------- #
+class MoveNoteArgs(BaseModel):
+    note_id: str
+    team: str | None = Field(
+        None, description="目標組別資料夾名（移到 <年度根>/<組別>）；只移到年度層級的會議文件時留空"
+    )
+    meeting_docs: bool = Field(
+        False,
+        description="是否放進「會議文件」：有 team → <年度根>/<組別>/會議文件；無 team → <年度根>/會議文件",
+    )
+
+
+class HackmdMoveNoteTool(_HackMDToolBase):
+    name = "hackmd_move_note"
+    description = (
+        "把既有 HackMD 筆記移到年度資料夾（SITCON 2027)內的其他資料夾：組別、會議文件、或組別/會議文件。"
+        "「會議文件」子夾會自動補建；組別資料夾不存在時不建立、不移動。只移動不刪除。"
+    )
+    args_model = MoveNoteArgs
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, MoveNoteArgs)
+        if not args.team and not args.meeting_docs:
+            return "請指定要移到哪個資料夾（哪一組，或會議文件）。"
+        try:
+            year_root = await self._hm.find_folder(self._year_folder)
+            if year_root is None:
+                return f"找不到「{self._year_folder}」年度資料夾，無法定位目標，未移動。"
+            path = [self._year_folder]
+            if args.team:
+                target = await self._hm.find_folder(args.team, parent_id=year_root.id)
+                if target is None:  # 組別資料夾不自動建立（HM-9 精神）
+                    return f"{self._year_folder} 下找不到「{args.team}」資料夾，未移動。請確認組別名稱。"
+                path.append(args.team)
+                if args.meeting_docs:
+                    target = await self._hm.ensure_meeting_subfolder(target.id, self._subfolder)
+                    path.append(self._subfolder)
+            else:
+                target = await self._hm.ensure_meeting_subfolder(year_root.id, self._meeting_folder)
+                path.append(self._meeting_folder)
+            await self._hm.move_note(args.note_id, target.id)
+            note = await self._hm.get_note(args.note_id)
+        except HackMDCredentialError as exc:
+            return str(exc)
+        except HackMDError as exc:
+            return f"移動失敗：{exc}"
+        return f"✅ 已把筆記「{note.title}」移到 {'/'.join(path)}\n{note.url}"
+
+
+# --------------------------------------------------------------------------- #
 # 編輯
 # --------------------------------------------------------------------------- #
 class UpdateNoteArgs(BaseModel):
@@ -319,4 +371,5 @@ def build_hackmd_tools(
         HackmdSearchNotesTool(*args),
         HackmdGetNoteTool(*args),
         HackmdUpdateNoteTool(*args),
+        HackmdMoveNoteTool(*args),
     ]

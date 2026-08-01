@@ -101,6 +101,21 @@ async def test_get_and_update_note() -> None:
         await c.aclose()
 
 
+async def test_move_note_patches_parent_and_invalidates_cache() -> None:
+    with respx.mock:
+        notes = respx.get(f"{BASE_URL}/teams/{TEAM}/notes").mock(
+            return_value=httpx.Response(200, json=[{"id": "n1", "title": "t", "tags": []}])
+        )
+        patch = respx.patch(f"{BASE_URL}/teams/{TEAM}/notes/n1").mock(return_value=httpx.Response(202))
+        c = _client()
+        await c.list_notes()
+        await c.move_note("n1", "f9")
+        assert json.loads(patch.calls.last.request.content) == {"parentFolderId": "f9"}
+        await c.list_notes()
+        assert notes.call_count == 2  # 移動後 metadata 快取失效（folderPaths 已變）
+        await c.aclose()
+
+
 async def test_notes_cache_hits_once() -> None:
     with respx.mock:
         route = respx.get(f"{BASE_URL}/teams/{TEAM}/notes").mock(

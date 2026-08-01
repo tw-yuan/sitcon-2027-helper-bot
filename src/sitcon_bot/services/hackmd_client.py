@@ -255,6 +255,13 @@ class HackMDClient:
         await self._request("PATCH", f"/teams/{self._team}/notes/{note_id}", payload)
         self._notes = self._notes_at = None
 
+    async def move_note(self, note_id: str, parent_folder_id: str) -> None:
+        """把筆記移到指定資料夾（歸檔調整；非刪除，不牴觸 HM-16）。"""
+        await self._request(
+            "PATCH", f"/teams/{self._team}/notes/{note_id}", {"parentFolderId": parent_folder_id}
+        )
+        self._notes = self._notes_at = None  # folderPaths 已變，metadata 快取失效
+
 
 def build_hackmd_client(settings: Any) -> HackMDClient:
     return HackMDClient(
