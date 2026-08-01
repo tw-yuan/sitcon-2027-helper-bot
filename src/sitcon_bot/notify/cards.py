@@ -1,4 +1,5 @@
-"""過期卡片提醒（NT-11）——收集開啟中且已到期的 GitLab 卡片，並把 assignee 換成 Telegram tag。
+"""過期卡片提醒（NT-11）——收集開著（GL-22：不含 Status::Review）且已到期的 GitLab 卡片，
+並把 assignee 換成 Telegram tag、從 Team:: label 取出組名供 digest 分組。
 
 tag 對應鏈（roster 以 gitlab_id 對應）：
     telegram_username → @username（真 mention，會跳通知）
@@ -29,8 +30,13 @@ class CardReminder:
     iid: int
     url: str  # 可能為空字串（API 未回 web_url 時 digest 退化為純文字 #iid）
     title: str
+    team: str  # Team:: label 去前綴後的組名；空字串＝卡片沒掛組別（digest 歸入「未分組」）
     due: date
     mentions: tuple[str, ...]
+
+
+def _team_of(labels: list[str]) -> str:
+    return next((label.removeprefix("Team::") for label in labels if label.startswith("Team::")), "")
 
 
 def mention_html(a: Assignee, member: Member | None) -> str:
@@ -44,7 +50,7 @@ def mention_html(a: Assignee, member: Member | None) -> str:
 
 
 async def collect_overdue_cards(gitlab: GitLabClient, roster: RosterService | None, cutoff: date) -> list[CardReminder]:
-    """開啟中且 due_date ≤ cutoff 的卡片，過期最久在前。"""
+    """開著（不含 Status::Review）且 due_date ≤ cutoff 的卡片，過期最久在前。"""
     issues = await gitlab.overdue_issues(cutoff)
     if not issues:
         return []
@@ -59,6 +65,7 @@ async def collect_overdue_cards(gitlab: GitLabClient, roster: RosterService | No
             iid=i.iid,
             url=i.web_url,
             title=i.title,
+            team=_team_of(i.labels),
             due=date.fromisoformat(i.due_date),  # overdue_issues 保證非空
             mentions=tuple(mention_html(a, by_gitlab_id.get(a.id)) for a in i.assignees),
         )

@@ -11,13 +11,19 @@ from sitcon_bot.services.sheets_roster import Member, Roster
 CUTOFF = date(2026, 7, 31)
 
 
-def _issue(iid: int, due: str, assignees: list[Assignee] | None = None, title: str = "卡") -> Issue:
+def _issue(
+    iid: int,
+    due: str,
+    assignees: list[Assignee] | None = None,
+    title: str = "卡",
+    labels: list[str] | None = None,
+) -> Issue:
     return Issue(
         iid=iid,
         web_url=f"https://gitlab.com/sitcon-tw/2027/-/issues/{iid}",
         title=title,
         description=None,
-        labels=[],
+        labels=labels or [],
         assignees=assignees or [],
         due_date=due,
         state="opened",
@@ -81,7 +87,17 @@ def test_mention_display_name_is_escaped() -> None:
 # 收集
 # ------------------------------------------------------------------ #
 async def test_collect_maps_assignees_and_parses_due() -> None:
-    gitlab = _FakeGitLab([_issue(117, "2026-07-25", [Assignee(id=1), Assignee(id=2)], title="贊助簡報")])
+    gitlab = _FakeGitLab(
+        [
+            _issue(
+                117,
+                "2026-07-25",
+                [Assignee(id=1), Assignee(id=2)],
+                title="贊助簡報",
+                labels=["Team::行政組", "Status::Doing"],
+            )
+        ]
+    )
     roster = _FakeRoster(
         [
             Member(gitlab_id=1, telegram_username="alice"),
@@ -92,9 +108,16 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
     assert gitlab.cutoffs == [CUTOFF]
     (card,) = cards
     assert card.iid == 117 and card.title == "贊助簡報"
+    assert card.team == "行政組"
     assert card.due == date(2026, 7, 25)
     assert card.url.endswith("/issues/117")
     assert card.mentions == ("@alice", '<a href="tg://user?id=55">鮑伯</a>')
+
+
+async def test_collect_without_team_label_has_empty_team() -> None:
+    gitlab = _FakeGitLab([_issue(1, "2026-07-30", labels=["Status::Inbox"])])
+    (card,) = await collect_overdue_cards(gitlab, None, CUTOFF)
+    assert card.team == ""
 
 
 async def test_collect_without_roster_marks_all_unmapped() -> None:

@@ -285,9 +285,9 @@ async def test_open_only_excludes_review_and_closed() -> None:
 # ------------------------------------------------------------------ #
 # NT-11：過期卡片查詢
 # ------------------------------------------------------------------ #
-def _bare_issue(iid: int, due: str | None, state: str = "opened") -> dict[str, Any]:
+def _bare_issue(iid: int, due: str | None, state: str = "opened", labels: list[str] | None = None) -> dict[str, Any]:
     return {"iid": iid, "web_url": f"u{iid}", "title": f"t{iid}", "description": None,
-            "labels": [], "assignees": [], "due_date": due, "state": state}
+            "labels": labels or [], "assignees": [], "due_date": due, "state": state}
 
 
 async def test_overdue_issues_filters_and_sorts() -> None:
@@ -301,6 +301,7 @@ async def test_overdue_issues_filters_and_sorts() -> None:
         4: _bare_issue(4, "2026-07-28", "closed"),  # 已關閉 → 排除
         5: _bare_issue(5, None),                    # 無到期日 → 排除
         6: _bare_issue(6, "2026-07-25"),            # 同日到期 → 以 iid 穩定排序
+        7: _bare_issue(7, "2026-07-20", labels=["Status::Review"]),  # Review 不算開著（GL-22）→ 排除
     }
     issues = await _client(b).overdue_issues(date(2026, 7, 31))
     assert [i.iid for i in issues] == [3, 6, 2]

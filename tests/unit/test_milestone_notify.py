@@ -257,7 +257,7 @@ async def test_dispatch_when_no_subscriptions(db: Database) -> None:
 # NT-11：過期卡片提醒
 # ------------------------------------------------------------------ #
 def _card(iid: int = 117) -> CardReminder:
-    return CardReminder(iid=iid, url="", title=f"卡{iid}", due=date(2026, 9, 10), mentions=("@alice",))
+    return CardReminder(iid=iid, url="", title=f"卡{iid}", team="行政組", due=date(2026, 9, 10), mentions=("@alice",))
 
 
 async def test_dispatch_appends_overdue_cards(db: Database) -> None:

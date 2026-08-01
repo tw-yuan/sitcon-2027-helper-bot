@@ -23,11 +23,12 @@ def _hit(name: str = "二籌", team: str = "全體", kind: str = KIND_SINGLE, no
 def _card(
     iid: int = 117,
     title: str = "贊助簡報初稿",
+    team: str = "行政組",
     due: date = date(2026, 7, 25),
     mentions: tuple[str, ...] = ("@alice",),
     url: str = "https://gitlab.com/sitcon-tw/2027/-/issues/117",
 ) -> CardReminder:
-    return CardReminder(iid=iid, url=url, title=title, due=due, mentions=mentions)
+    return CardReminder(iid=iid, url=url, title=title, team=team, due=due, mentions=mentions)
 
 
 def test_format_date_has_padded_weekday() -> None:
@@ -107,3 +108,53 @@ def test_cards_are_capped_with_summary_line() -> None:
     assert f"• #{CARDS_MAX} " in out
     assert f"• #{CARDS_MAX + 1} " not in out
     assert "…另有 5 張" in out
+
+
+# ------------------------------------------------------------------ #
+# 卡片分組（依 Team::，組內依到期日）
+# ------------------------------------------------------------------ #
+def test_cards_grouped_by_team_with_header() -> None:
+    cards = [
+        _card(iid=1, team="行政組", due=date(2026, 7, 25), url=""),
+        _card(iid=2, team="開發組", due=date(2026, 7, 26), url=""),
+        _card(iid=3, team="行政組", due=date(2026, 7, 27), url=""),
+    ]
+    out = render_digest(D, [], cards=cards)
+    assert "<b>【行政組】</b>\n• #1 " in out
+    assert "<b>【開發組】</b>\n• #2 " in out
+    assert out.count("【行政組】") == 1  # 同組只出現一個標頭
+
+
+def test_cards_sorted_by_due_within_group() -> None:
+    """組內依到期日排序，與傳入順序無關。"""
+    cards = [
+        _card(iid=1, team="行政組", due=date(2026, 7, 27), url=""),
+        _card(iid=2, team="行政組", due=date(2026, 7, 25), url=""),
+    ]
+    out = render_digest(D, [], cards=cards)
+    assert out.index("• #2 ") < out.index("• #1 ")
+
+
+def test_card_groups_ordered_by_most_overdue_first() -> None:
+    """組間依該組最早到期排序：最急的組排最前。"""
+    cards = [
+        _card(iid=1, team="開發組", due=date(2026, 7, 28), url=""),
+        _card(iid=2, team="行政組", due=date(2026, 7, 25), url=""),
+    ]
+    out = render_digest(D, [], cards=cards)
+    assert out.index("【行政組】") < out.index("【開發組】")
+
+
+def test_cards_without_team_grouped_last_as_ungrouped() -> None:
+    cards = [
+        _card(iid=1, team="", due=date(2026, 7, 20), url=""),
+        _card(iid=2, team="行政組", due=date(2026, 7, 28), url=""),
+    ]
+    out = render_digest(D, [], cards=cards)
+    assert "<b>【未分組】</b>\n• #1 " in out
+    assert out.index("【行政組】") < out.index("【未分組】")  # 未分組殿後，即使過期更久
+
+
+def test_card_team_name_is_html_escaped() -> None:
+    out = render_digest(D, [], cards=[_card(team="<設計組>")])
+    assert "<b>【&lt;設計組&gt;】</b>" in out

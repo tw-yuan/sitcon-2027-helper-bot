@@ -5,7 +5,8 @@
 
 兩個段落：
     📅 里程碑——隔天事項，一行一筆 `[組別] 標題`
-    ⚠️ 卡片提醒——開啟中且已到期的 GitLab 卡片，附 assignee tag（cards.py 先組好）
+    ⚠️ 卡片提醒——開著（不含 Status::Review）且已到期的 GitLab 卡片，附 assignee tag
+      （cards.py 先組好）；依 Team:: 組別分組、組內依到期日排序，沒掛組別的歸「未分組」殿後
 """
 
 from __future__ import annotations
@@ -48,8 +49,17 @@ def _card_line(card: CardReminder) -> str:
 
 
 def _cards_section(cards: Sequence[CardReminder]) -> str:
-    lines = ["⚠️ <b>卡片提醒</b>", ""]
-    lines += [_card_line(c) for c in cards[:CARDS_MAX]]
+    # 先以整體到期順序截到上限（保住過期最久的），再分組排版。
+    shown = sorted(cards, key=lambda c: (c.due, c.iid))[:CARDS_MAX]
+    groups: dict[str, list[CardReminder]] = {}
+    for c in shown:
+        groups.setdefault(c.team, []).append(c)
+    # 組間依「該組最早到期」排序（最急的組在前），未分組（team 為空）一律殿後。
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0] == "", kv[1][0].due, kv[1][0].iid))
+    lines = ["⚠️ <b>卡片提醒</b>"]
+    for team, group in ordered:
+        lines += ["", f"<b>【{escape_html(team) or '未分組'}】</b>"]
+        lines += [_card_line(c) for c in group]
     if len(cards) > CARDS_MAX:
         lines.append(f"…另有 {len(cards) - CARDS_MAX} 張")
     return "\n".join(lines)
