@@ -97,8 +97,12 @@ async def run(settings: Settings) -> None:
             settings.google_dwd_subject,
             settings.calendar_id,
             settings.tz,
+            settings.calendar_send_updates,
         )
-        log.info("Calendar（DWD）啟用：subject=%s calendar=%s", settings.google_dwd_subject, settings.calendar_id)
+        log.info(
+            "Calendar（DWD）啟用：subject=%s calendar=%s sendUpdates=%s",
+            settings.google_dwd_subject, settings.calendar_id, settings.calendar_send_updates,
+        )
     else:
         log.info("Calendar（DWD）停用（GOOGLE_DWD_SUBJECT 未設定）")
     hackmd = build_hackmd_client(settings)

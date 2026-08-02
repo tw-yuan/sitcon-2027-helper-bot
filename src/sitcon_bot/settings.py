@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # service account 的 client ID 授權 https://www.googleapis.com/auth/calendar scope。
     google_dwd_subject: str = ""
     calendar_id: str = "primary"  # 操作冒用對象的哪本行事曆
+    # 活動異動要不要寄通知信給邀請對象：all＝寄／externalOnly＝只寄網域外／none＝不寄
+    # （none 時對方日曆上仍看得到活動，只是沒有 email）
+    calendar_send_updates: Literal["all", "externalOnly", "none"] = "all"
 
     # --- 里程碑預告（NT-*）---
     milestone_notify_enabled: bool = True
@@ -182,7 +185,8 @@ class Settings(BaseSettings):
             f"  Drive         : drive_id={self.drive_shared_drive_id}  scope={self.drive_scope_folder_names}",
             "  Calendar(DWD) : "
             + (
-                f"subject={self.google_dwd_subject}  calendar={self.calendar_id}"
+                f"subject={self.google_dwd_subject}  calendar={self.calendar_id}  "
+                f"邀請信={self.calendar_send_updates}"
                 if self.google_dwd_subject
                 else "停用（GOOGLE_DWD_SUBJECT 未設定）"
             ),

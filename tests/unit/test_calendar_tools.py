@@ -177,10 +177,24 @@ async def test_create_tool_reports_and_wraps_external() -> None:
         CTX,
     )
     assert "✅ 已建立活動" in reply
-    assert "已寄邀請信" in reply
+    assert "已寄邀請信" in reply  # 預設 notifies_attendees=True
     assert "Meet：https://meet.google.com/uee-eyar-cos" in reply
     assert "<external_data>" in reply  # 標題／邀請對象為外部可控（NFR-6）
     assert "SITCON 2027 零籌" in reply
+
+
+async def test_create_tool_no_invite_mail_when_send_updates_none() -> None:
+    gw = FakeGateway()
+    svc = CalendarService(gw, calendar_id="primary", tz="Asia/Taipei", notifies_attendees=False)
+    tool = CalendarCreateEventTool(svc)
+    reply = await tool.run(
+        CreateEventArgs(
+            title="x", start="2026-08-15 17:00", end="2026-08-15 20:00", attendees=["a@x.tw"]
+        ),
+        CTX,
+    )
+    assert "未寄邀請信" in reply
+    assert "已寄邀請信" not in reply
 
 
 async def test_list_tool_time_range_covers_whole_days() -> None:

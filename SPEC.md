@@ -175,10 +175,10 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 ### 8.1 Google Calendar（DWD，2026-08-02 追加需求）
 
 - **CA-1** 以 service account 的 **domain-wide delegation** 冒用 `.env` 指定帳號（`GOOGLE_DWD_SUBJECT`，現值 `me@yuan-tw.net`）操作其行事曆（`CALENDAR_ID`，預設 primary）；未設定冒用對象時整組工具不註冊。
-- **CA-2** 建立活動：標題、開始／結束（Asia/Taipei；只給日期＝全天）、地點、描述、邀請對象（email，含 Google 群組信箱）；寫入一律 `sendUpdates=all`（寄邀請信）。
+- **CA-2** 建立活動：標題、開始／結束（Asia/Taipei；只給日期＝全天）、地點、描述、邀請對象（email，含 Google 群組信箱）；異動通知信依 `CALENDAR_SEND_UPDATES` 設定（all＝寄／externalOnly＝只寄網域外／none＝不寄；none 時邀請對象日曆仍會出現活動），工具回報措辭與設定一致。
 - **CA-3** Meet：可掛**既有** Meet 連結（以 conferenceData 複製語意帶入 conferenceId；「Meet 代碼：大籌」這類指涉由 LLM 依背景知識「會議室連結」解析），或依明確要求開全新 Meet（createRequest）。兩者以既有連結優先。
 - **CA-4** 查詢（日期區間＋關鍵字，供編輯／刪除前取得活動 id）與編輯（標題、時間、邀請對象增減、Meet、描述、地點）。
-- **CA-5** 刪除活動為破壞性操作：僅在使用者明確指名該活動時執行；刪除會通知邀請對象。
+- **CA-5** 刪除活動為破壞性操作：僅在使用者明確指名該活動時執行；是否通知邀請對象依 CA-2 之設定。
 - **CA-6** DWD 未在 Workspace 後台授權 scope 時，回覆可讀的設定指引訊息（不得只回原始 401）。
 
 ---
@@ -323,7 +323,7 @@ notify_state                            -- NT-7
 | GitLab REST v4（gitlab.com） | 卡片＋label 管理 | `GET/POST /projects/:id/labels`、`PUT/DELETE /projects/:id/labels/:name`、`GET/POST /projects/:id/issues`、`PUT /projects/:id/issues/:iid`、`GET/POST /projects/:id/issues/:iid/notes`、`GET /projects/:id/issues?<filters>` |
 | Google Drive v3 | 檔案搜尋 | `files.list`（`corpora=drive`、`driveId`、`supportsAllDrives`、`includeItemsFromAllDrives`、`q=name/fullText contains`）、`files.get`（metadata） |
 | Google Sheets v4 | 名冊 | `spreadsheets.get`（以 gid 對應分頁名）、`spreadsheets.values.get` |
-| Google Calendar v3（DWD 冒用） | 行事曆 | `events.insert/patch/get/list/delete`（`conferenceDataVersion=1`、`sendUpdates=all`） |
+| Google Calendar v3（DWD 冒用） | 行事曆 | `events.insert/patch/get/list/delete`（`conferenceDataVersion=1`、`sendUpdates` 依設定） |
 | HackMD API v1（api.hackmd.io/v1） | 筆記 | `GET /teams/:path/notes`、`POST /teams/:path/notes`、`GET /notes/:id`、`PATCH`（team note 更新）、Team Folders 相關端點（列出／建立資料夾、於資料夾內建立筆記）——實作時以官方 Swagger（api.hackmd.io/v1/docs）為準 |
 | LLM API | 語意解析與生成 | Anthropic Messages API（含 thinking）／OpenAI 相容 chat completions（含 tool calling） |
 

@@ -7,7 +7,8 @@
 - 既有 Meet：Calendar API 不能「指定代碼開會議」，但接受把另一場會議的 conferenceData
   複製到新活動（conferenceDataVersion=1 + conferenceId + entryPoints），效果即掛上既有
   會議室連結；固定會議室（大籌／各組）都適用。
-- 邀請通知一律 sendUpdates=all：建立／異動／刪除時 Google 會寄邀請信給 attendees。
+- 邀請通知依 CALENDAR_SEND_UPDATES 設定（all＝寄邀請信／externalOnly＝只寄網域外／none＝不寄；
+  none 時邀請對象仍會在自己的 Google 日曆上看到活動，只是沒有 email）。
 - 時間一律以設定時區（Asia/Taipei）解析；只給日期（YYYY-MM-DD）視為全天活動。
 - DWD 未在 Workspace 後台授權時 API 回 unauthorized_client／invalid_grant，轉為可讀訊息。
 """
@@ -107,10 +108,18 @@ def _time_field(value: str, tz: str) -> dict[str, str]:
 
 
 class CalendarService:
-    def __init__(self, gateway: CalendarGateway, calendar_id: str = "primary", tz: str = "Asia/Taipei") -> None:
+    def __init__(
+        self,
+        gateway: CalendarGateway,
+        calendar_id: str = "primary",
+        tz: str = "Asia/Taipei",
+        notifies_attendees: bool = True,
+    ) -> None:
         self._gw = gateway
         self._calendar_id = calendar_id
         self._tz = tz
+        # 供工具層決定回報措辭（實際寄不寄由 gateway 的 sendUpdates 決定，兩者同源於設定）
+        self.notifies_attendees = notifies_attendees
 
     async def create_event(
         self,
@@ -218,11 +227,12 @@ class CalendarService:
 # Google Calendar I/O（DWD）
 # --------------------------------------------------------------------------- #
 class GoogleCalendarGateway:
-    """所有寫入 sendUpdates=all（寄邀請信）；掛 conferenceData 需 conferenceDataVersion=1。"""
+    """寫入的 sendUpdates 依設定（all／externalOnly／none）；掛 conferenceData 需 conferenceDataVersion=1。"""
 
-    def __init__(self, sa_json_path: str, subject: str) -> None:
+    def __init__(self, sa_json_path: str, subject: str, send_updates: str = "all") -> None:
         self._sa_json_path = sa_json_path
         self._subject = subject
+        self._send_updates = send_updates
         self._service: Any = None
         self._creds: Any = None
 
@@ -247,13 +257,14 @@ class GoogleCalendarGateway:
 
     def _insert_sync(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
         req = self._service_or_build().events().insert(
-            calendarId=calendar_id, body=body, conferenceDataVersion=1, sendUpdates="all"
+            calendarId=calendar_id, body=body, conferenceDataVersion=1, sendUpdates=self._send_updates
         )
         return self._execute(req)
 
     def _patch_sync(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
         req = self._service_or_build().events().patch(
-            calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1, sendUpdates="all"
+            calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1,
+            sendUpdates=self._send_updates,
         )
         return self._execute(req)
 
@@ -285,7 +296,7 @@ class GoogleCalendarGateway:
 
     def _delete_sync(self, calendar_id: str, event_id: str) -> None:
         req = self._service_or_build().events().delete(
-            calendarId=calendar_id, eventId=event_id, sendUpdates="all"
+            calendarId=calendar_id, eventId=event_id, sendUpdates=self._send_updates
         )
         self._execute(req)
 
@@ -308,6 +319,15 @@ class GoogleCalendarGateway:
 
 
 def build_calendar_service(
-    sa_json_path: str, subject: str, calendar_id: str = "primary", tz: str = "Asia/Taipei"
+    sa_json_path: str,
+    subject: str,
+    calendar_id: str = "primary",
+    tz: str = "Asia/Taipei",
+    send_updates: str = "all",
 ) -> CalendarService:
-    return CalendarService(GoogleCalendarGateway(sa_json_path, subject), calendar_id, tz)
+    return CalendarService(
+        GoogleCalendarGateway(sa_json_path, subject, send_updates),
+        calendar_id,
+        tz,
+        notifies_attendees=(send_updates != "none"),
+    )

@@ -54,8 +54,7 @@ class CreateEventArgs(BaseModel):
 class CalendarCreateEventTool(_CalendarToolBase):
     name = "calendar_create_event"
     description = (
-        "在行事曆建立活動：時間、邀請對象（會寄邀請信）、Meet（掛既有會議室連結或開新的）。"
-        "多場活動就多次呼叫。"
+        "在行事曆建立活動：時間、邀請對象、Meet（掛既有會議室連結或開新的）。多場活動就多次呼叫。"
     )
     args_model = CreateEventArgs
 
@@ -74,7 +73,13 @@ class CalendarCreateEventTool(_CalendarToolBase):
             )
         except CalendarError as exc:
             return f"建立活動失敗：{exc}"
-        invited = "（已寄邀請信給邀請對象）" if args.attendees else ""
+        invited = ""
+        if args.attendees:
+            invited = (
+                "（已寄邀請信給邀請對象）"
+                if self._cal.notifies_attendees
+                else "（依設定未寄邀請信；邀請對象的日曆上仍會出現活動）"
+            )
         parts = [f"✅ 已建立活動{invited}", _fmt_event(ev)]
         if args.create_meet and not ev.meet_url:
             parts.append("⚠️ 新 Meet 未建立成功（可能尚在生成），請點活動連結確認。")
@@ -125,7 +130,7 @@ class UpdateEventArgs(BaseModel):
 
 class CalendarUpdateEventTool(_CalendarToolBase):
     name = "calendar_update_event"
-    description = "編輯既有活動：標題、時間、邀請對象（增減）、Meet 連結、描述、地點。異動會通知邀請對象。"
+    description = "編輯既有活動：標題、時間、邀請對象（增減）、Meet 連結、描述、地點。"
     args_model = UpdateEventArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
@@ -156,7 +161,7 @@ class DeleteEventArgs(BaseModel):
 
 class CalendarDeleteEventTool(_CalendarToolBase):
     name = "calendar_delete_event"
-    description = "刪除行事曆活動（破壞性、會通知邀請對象；必須是使用者明確指名的活動）。"
+    description = "刪除行事曆活動（破壞性；必須是使用者明確指名的活動）。"
     args_model = DeleteEventArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
@@ -165,7 +170,8 @@ class CalendarDeleteEventTool(_CalendarToolBase):
             ev = await self._cal.delete_event(args.event_id)
         except CalendarError as exc:
             return f"刪除活動失敗：{exc}"
-        return "✅ 已刪除活動（已通知邀請對象）\n" + _fmt_event(ev)
+        note = "（已通知邀請對象）" if self._cal.notifies_attendees and ev.attendees else ""
+        return f"✅ 已刪除活動{note}\n" + _fmt_event(ev)
 
 
 def build_calendar_tools(calendar: CalendarService) -> list[Tool]:
