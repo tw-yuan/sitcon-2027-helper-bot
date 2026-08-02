@@ -17,6 +17,7 @@ from .agent.context import PendingStore
 from .agent.core import Agent, AgentRequest
 from .agent.prompts import PromptBuilder, PromptData
 from .agent.tools.base import ToolRegistry
+from .agent.tools.calendar_tools import build_calendar_tools
 from .agent.tools.drive_tools import build_drive_tools
 from .agent.tools.gitlab_tools import build_gitlab_tools
 from .agent.tools.hackmd_tools import build_hackmd_tools
@@ -27,6 +28,7 @@ from .domain.templates import load_template_store
 from .notify.cards import collect_overdue_cards
 from .notify.scheduler import MilestoneNotifier
 from .notify.subscriptions import NotifyStateStore, SubscriptionStore
+from .services.calendar_client import build_calendar_service
 from .services.drive_client import build_drive_service
 from .services.gitlab_client import build_gitlab_client
 from .services.hackmd_client import build_hackmd_client
@@ -43,14 +45,14 @@ from .telegram.gateway import BusinessRequest, BusinessResult, Gateway
 log = logging.getLogger(__name__)
 
 
-def _load_charter(path: str) -> str | None:
-    """讀取職掌文件（RO-8）；缺檔或讀取失敗回 None。"""
+def _load_doc(path: str) -> str | None:
+    """讀取整份文字文件（職掌 RO-8、背景知識）；缺檔或讀取失敗回 None。"""
     try:
         p = Path(path)
         if p.exists():
             return p.read_text(encoding="utf-8")
     except OSError:
-        log.warning("讀取職掌文件失敗：%s", path, exc_info=True)
+        log.warning("讀取文件失敗：%s", path, exc_info=True)
     return None
 
 
@@ -88,14 +90,31 @@ async def run(settings: Settings) -> None:
         settings.milestone_sheet_gid,
         settings.cache_ttl_milestones,
     )
+    calendar = None
+    if settings.google_dwd_subject:
+        calendar = build_calendar_service(
+            settings.google_sa_json_path,
+            settings.google_dwd_subject,
+            settings.calendar_id,
+            settings.tz,
+        )
+        log.info("Calendar（DWD）啟用：subject=%s calendar=%s", settings.google_dwd_subject, settings.calendar_id)
+    else:
+        log.info("Calendar（DWD）停用（GOOGLE_DWD_SUBJECT 未設定）")
     hackmd = build_hackmd_client(settings)
     templates = await asyncio.to_thread(load_template_store)
 
-    charter = {"text": await asyncio.to_thread(_load_charter, settings.team_charter_path)}
+    charter = {"text": await asyncio.to_thread(_load_doc, settings.team_charter_path)}
     if charter["text"] is None:
         log.info("未載入職掌文件（%s 缺），改以 Team:: label 判斷組別（RO-8）", settings.team_charter_path)
     else:
         log.info("已載入職掌文件：%s（%d 字）", settings.team_charter_path, len(charter["text"]))
+
+    knowledge = {"text": await asyncio.to_thread(_load_doc, settings.knowledge_path)}
+    if knowledge["text"] is None:
+        log.info("未載入背景知識（%s 缺），不影響運作", settings.knowledge_path)
+    else:
+        log.info("已載入背景知識：%s（%d 字）", settings.knowledge_path, len(knowledge["text"]))
 
     async def _labels() -> list[str]:
         try:
@@ -116,7 +135,13 @@ async def run(settings: Settings) -> None:
     async def prompt_provider() -> PromptData:
         # 兩者都吃快取，但冷快取／TTL 到期時是兩趟外部 I/O；併發拿可省掉一趟的等待。
         labels, (rows, available) = await asyncio.gather(_labels(), _roster_rows())
-        return PromptData(labels=labels, roster_rows=rows, charter=charter["text"], roster_available=available)
+        return PromptData(
+            labels=labels,
+            roster_rows=rows,
+            charter=charter["text"],
+            knowledge=knowledge["text"],
+            roster_available=available,
+        )
 
     tools = ToolRegistry(
         [
@@ -133,6 +158,7 @@ async def run(settings: Settings) -> None:
                 settings.tz,
                 settings.hackmd_search_folder_list,
             ),
+            *(build_calendar_tools(calendar) if calendar is not None else []),
         ]
     )
     prompt_builder = PromptBuilder(prompt_provider, tz=settings.tz)
@@ -172,11 +198,14 @@ async def run(settings: Settings) -> None:
             log.warning("籌備時程表重載失敗", exc_info=True)
         hackmd.reload()
         await asyncio.to_thread(templates.reload)
-        charter["text"] = await asyncio.to_thread(_load_charter, settings.team_charter_path)
+        charter["text"] = await asyncio.to_thread(_load_doc, settings.team_charter_path)
         charter_state = "已載入" if charter["text"] else "（缺）"
+        knowledge["text"] = await asyncio.to_thread(_load_doc, settings.knowledge_path)
+        knowledge_state = "已載入" if knowledge["text"] else "（缺）"
         return (
             f"label {n_labels} 個、名冊 {n_roster} 人、照片索引 {n_photos} 張、"
-            f"里程碑 {n_milestones} 筆、Drive／HackMD 快取已重載、職掌文件{charter_state}"
+            f"里程碑 {n_milestones} 筆、Drive／HackMD 快取已重載、"
+            f"職掌文件{charter_state}、背景知識{knowledge_state}"
         )
 
     # 里程碑預告（NT-*）：notifier 需要 gateway 送訊、gateway 需要 commands、commands 需要 notifier，

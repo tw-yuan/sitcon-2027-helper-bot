@@ -292,6 +292,83 @@ class GitlabGetIssueTool(_GitLabToolBase):
 
 
 # --------------------------------------------------------------------------- #
+# label 管理（2026-08-02 追加需求；GL-10 的白名單約束仍適用於卡片操作）
+# --------------------------------------------------------------------------- #
+class CreateLabelArgs(BaseModel):
+    name: str = Field(description="新 label 名稱；scoped label 以 :: 分隔（如 Status::X、Team::X）")
+    color: str = Field("#6699cc", description="色碼 #RRGGBB 或 CSS 色名；使用者未指定時用預設")
+    description: str | None = Field(None, description="label 描述（選填）")
+
+
+class GitlabCreateLabelTool(_GitLabToolBase):
+    name = "gitlab_create_label"
+    description = "在專案建立新 label（僅在使用者明確要求建立 label 時使用；建卡／編輯卡片仍只能用既有 label）。"
+    args_model = CreateLabelArgs
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, CreateLabelArgs)
+        try:
+            created = await self._gl.create_label(name=args.name, color=args.color, description=args.description)
+        except GitLabError as exc:
+            return f"建立 label 失敗：{exc}"
+        return f"✅ 已建立 label「{created}」（色碼 {args.color}），白名單已更新。"
+
+
+class UpdateLabelArgs(BaseModel):
+    name: str = Field(description="要編輯的既有 label 名稱")
+    new_name: str | None = Field(None, description="改名後的新名稱（不改名就留空）")
+    color: str | None = Field(None, description="新色碼 #RRGGBB 或 CSS 色名（不換色就留空）")
+    description: str | None = Field(None, description="新描述；空字串＝清除描述，留空＝不變")
+
+
+class GitlabUpdateLabelTool(_GitLabToolBase):
+    name = "gitlab_update_label"
+    description = "編輯既有 label：改名、換色、改描述。改名後所有已掛此 label 的卡片會跟著改。"
+    args_model = UpdateLabelArgs
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, UpdateLabelArgs)
+        try:
+            final = await self._gl.update_label(
+                args.name, new_name=args.new_name, color=args.color, description=args.description
+            )
+        except LabelNotFoundError as exc:
+            return _label_error(exc)
+        except GitLabError as exc:
+            return f"編輯 label 失敗：{exc}"
+        changes = []
+        if args.new_name:
+            changes.append(f"改名→「{final}」")
+        if args.color:
+            changes.append(f"色碼→{args.color}")
+        if args.description is not None:
+            changes.append("描述已清除" if args.description == "" else "描述已更新")
+        if not changes:
+            return f"label「{final}」沒有實際變更。"
+        return f"✅ 已編輯 label「{args.name}」：" + "；".join(changes) + "，白名單已更新。"
+
+
+class DeleteLabelArgs(BaseModel):
+    name: str = Field(description="要刪除的既有 label 名稱（必須是使用者明確指名的）")
+
+
+class GitlabDeleteLabelTool(_GitLabToolBase):
+    name = "gitlab_delete_label"
+    description = "刪除既有 label（破壞性：會同時從所有卡片移除且不可復原；必須是使用者明確指名的 label）。"
+    args_model = DeleteLabelArgs
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, DeleteLabelArgs)
+        try:
+            deleted = await self._gl.delete_label(args.name)
+        except LabelNotFoundError as exc:
+            return _label_error(exc)
+        except GitLabError as exc:
+            return f"刪除 label 失敗：{exc}"
+        return f"✅ 已刪除 label「{deleted}」（已同時從所有卡片移除），白名單已更新。"
+
+
+# --------------------------------------------------------------------------- #
 # 查詢
 # --------------------------------------------------------------------------- #
 class SearchIssuesArgs(BaseModel):
@@ -343,4 +420,7 @@ def build_gitlab_tools(
         GitlabCommentIssueTool(gitlab, roster, gitlab_url),
         GitlabGetIssueTool(gitlab, roster, gitlab_url),
         GitlabSearchIssuesTool(gitlab, roster, gitlab_url),
+        GitlabCreateLabelTool(gitlab, roster, gitlab_url),
+        GitlabUpdateLabelTool(gitlab, roster, gitlab_url),
+        GitlabDeleteLabelTool(gitlab, roster, gitlab_url),
     ]

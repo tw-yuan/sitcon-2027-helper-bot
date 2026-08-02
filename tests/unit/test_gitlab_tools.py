@@ -8,14 +8,20 @@ from sitcon_bot.agent.tools.base import ToolContext
 from sitcon_bot.agent.tools.gitlab_tools import (
     CommentIssueArgs,
     CreateIssueArgs,
+    CreateLabelArgs,
+    DeleteLabelArgs,
     GetIssueArgs,
     GitlabCommentIssueTool,
     GitlabCreateIssueTool,
+    GitlabCreateLabelTool,
+    GitlabDeleteLabelTool,
     GitlabGetIssueTool,
     GitlabSearchIssuesTool,
     GitlabUpdateIssueTool,
+    GitlabUpdateLabelTool,
     SearchIssuesArgs,
     UpdateIssueArgs,
+    UpdateLabelArgs,
 )
 from sitcon_bot.services.gitlab_client import GitLabClient
 from sitcon_bot.services.sheets_roster import Member, Roster
@@ -28,6 +34,7 @@ CTX = ToolContext(chat_id=-100, thread_id=None, user_id=42, username="yuan", tex
 
 class FakeBackend:
     def __init__(self) -> None:
+        self.labels = list(LABELS)
         self.issues: dict[int, dict[str, Any]] = {}
         self.notes: dict[int, list[dict[str, Any]]] = {}
         self.last_create_payload: dict[str, Any] | None = None
@@ -39,7 +46,19 @@ class FakeBackend:
         return [{"id": i, "username": f"u{i}", "name": f"n{i}"} for i in ids]
 
     def list_labels(self) -> list[str]:
-        return list(LABELS)
+        return list(self.labels)
+
+    def create_label(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.labels.append(payload["name"])
+        return dict(payload)
+
+    def update_label(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        final = payload.get("new_name", name)
+        self.labels = [final if label == name else label for label in self.labels]
+        return {"name": final}
+
+    def delete_label(self, name: str) -> None:
+        self.labels.remove(name)
 
     def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.last_create_payload = payload
@@ -244,3 +263,55 @@ async def test_search_no_results() -> None:
     tool = GitlabSearchIssuesTool(_client(FakeBackend()), None)
     reply = await tool.run(SearchIssuesArgs(open_only=True), CTX)
     assert "查無" in reply
+
+
+# ------------------------------------------------------------------ #
+# label 管理（2026-08-02 追加需求）
+# ------------------------------------------------------------------ #
+async def test_create_label_tool_success() -> None:
+    backend = FakeBackend()
+    tool = GitlabCreateLabelTool(_client(backend), None)
+    reply = await tool.run(CreateLabelArgs(name="Status::Blocked", color="#ff0000"), CTX)
+    assert "已建立 label「Status::Blocked」" in reply
+    assert "Status::Blocked" in backend.labels
+
+
+async def test_create_label_tool_duplicate_rejected() -> None:
+    backend = FakeBackend()
+    tool = GitlabCreateLabelTool(_client(backend), None)
+    reply = await tool.run(CreateLabelArgs(name="status::inbox"), CTX)  # 正規化後同名
+    assert "已存在" in reply
+    assert backend.labels.count("Status::Inbox") == 1
+
+
+async def test_update_label_tool_rename() -> None:
+    backend = FakeBackend()
+    tool = GitlabUpdateLabelTool(_client(backend), None)
+    reply = await tool.run(UpdateLabelArgs(name="0913 一籌", new_name="0920 一籌"), CTX)
+    assert "改名→「0920 一籌」" in reply
+    assert "0920 一籌" in backend.labels
+    assert "0913 一籌" not in backend.labels
+
+
+async def test_update_label_tool_unknown_gives_gl12_message() -> None:
+    tool = GitlabUpdateLabelTool(_client(FakeBackend()), None)
+    reply = await tool.run(UpdateLabelArgs(name="Status::Inboxx", color="#000"), CTX)
+    assert "找不到 label" in reply
+    assert "Status::Inbox" in reply  # 近似候選
+
+
+async def test_delete_label_tool_success_mentions_card_removal() -> None:
+    backend = FakeBackend()
+    tool = GitlabDeleteLabelTool(_client(backend), None)
+    reply = await tool.run(DeleteLabelArgs(name="status::review"), CTX)
+    assert "已刪除 label「Status::Review」" in reply
+    assert "從所有卡片移除" in reply
+    assert "Status::Review" not in backend.labels
+
+
+async def test_delete_label_tool_unknown() -> None:
+    backend = FakeBackend()
+    tool = GitlabDeleteLabelTool(_client(backend), None)
+    reply = await tool.run(DeleteLabelArgs(name="不存在"), CTX)
+    assert "找不到 label" in reply
+    assert len(backend.labels) == len(LABELS)

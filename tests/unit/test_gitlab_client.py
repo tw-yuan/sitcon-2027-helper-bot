@@ -72,6 +72,24 @@ class FakeBackend:
         self._maybe_error("list_labels")
         return list(self.labels)
 
+    def create_label(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.calls["create_label"] += 1
+        self._maybe_error("create_label")
+        self.labels.append(payload["name"])
+        return dict(payload)
+
+    def update_label(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.calls["update_label"] += 1
+        self._maybe_error("update_label")
+        final = payload.get("new_name", name)
+        self.labels = [final if label == name else label for label in self.labels]
+        return {"name": final, **{k: v for k, v in payload.items() if k != "new_name"}}
+
+    def delete_label(self, name: str) -> None:
+        self.calls["delete_label"] += 1
+        self._maybe_error("delete_label")
+        self.labels.remove(name)
+
     def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls["create_issue"] += 1
         self._maybe_error("create_issue")
@@ -190,9 +208,81 @@ async def test_create_resolves_label_normalization() -> None:
     assert "Status::Inbox" in res.issue.labels
 
 
-async def test_never_creates_labels_on_unknown() -> None:
-    # FakeBackend 無 create_label 方法；client 也不呼叫 → 結構上保證 GL-10
-    assert not hasattr(FakeBackend(LABELS), "create_label")
+async def test_card_ops_never_create_labels_implicitly() -> None:
+    # GL-10（卡片操作）：未知 label 一律拋錯，不會偷偷呼叫 create_label 補建
+    b = FakeBackend(LABELS)
+    with pytest.raises(LabelNotFoundError):
+        await _client(b).create_issue(
+            title="t", description="d", label_names=["不存在的label"],
+            assignee_ids=[], due_date=None, requester="@yuan",
+        )
+    assert b.calls["create_label"] == 0
+
+
+# ------------------------------------------------------------------ #
+# label 管理（2026-08-02 追加需求）
+# ------------------------------------------------------------------ #
+async def test_create_label_refreshes_whitelist() -> None:
+    b = FakeBackend(LABELS)
+    c = _client(b)
+    name = await c.create_label(name="Status::Blocked", color="#ff0000")
+    assert name == "Status::Blocked"
+    assert b.calls["create_label"] == 1
+    # 白名單立即可用：後續建卡不需等 TTL
+    idx = await c.get_label_index()
+    assert idx.resolve("status::blocked") == "Status::Blocked"
+
+
+async def test_create_label_rejects_duplicate() -> None:
+    from sitcon_bot.services.gitlab_client import GitLabError
+
+    b = FakeBackend(LABELS)
+    with pytest.raises(GitLabError, match="已存在"):
+        await _client(b).create_label(name="status::inbox", color="#fff")  # 正規化後同名
+    assert b.calls["create_label"] == 0
+
+
+async def test_update_label_rename_and_refresh() -> None:
+    b = FakeBackend(LABELS)
+    c = _client(b)
+    final = await c.update_label("0913 一籌", new_name="0920 一籌")
+    assert final == "0920 一籌"
+    idx = await c.get_label_index()
+    assert idx.resolve("0920 一籌") is not None
+    assert idx.resolve("0913 一籌") is None
+
+
+async def test_update_label_rename_clash_rejected() -> None:
+    from sitcon_bot.services.gitlab_client import GitLabError
+
+    b = FakeBackend(LABELS)
+    with pytest.raises(GitLabError, match="已存在"):
+        await _client(b).update_label("Status::Inbox", new_name="Status::Doing")
+    assert b.calls["update_label"] == 0
+
+
+async def test_update_label_unknown_gives_candidates() -> None:
+    b = FakeBackend(LABELS)
+    with pytest.raises(LabelNotFoundError) as ei:
+        await _client(b).update_label("Status::Inboxx", color="#000")
+    assert "Status::Inbox" in ei.value.candidates
+
+
+async def test_delete_label_resolves_and_refreshes() -> None:
+    b = FakeBackend(LABELS)
+    c = _client(b)
+    deleted = await c.delete_label("status::review")  # 正規化解析到正式名稱
+    assert deleted == "Status::Review"
+    assert "Status::Review" not in b.labels
+    idx = await c.get_label_index()
+    assert idx.resolve("Status::Review") is None
+
+
+async def test_delete_label_unknown_raises() -> None:
+    b = FakeBackend(LABELS)
+    with pytest.raises(LabelNotFoundError):
+        await _client(b).delete_label("不存在")
+    assert b.calls["delete_label"] == 0
 
 
 # ------------------------------------------------------------------ #

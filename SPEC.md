@@ -125,10 +125,17 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 
 ### 7.2 label 規則
 
-- **GL-10** 【硬性】bot 只能使用專案**既有** label，任何情況下不得建立新 label；此限制在程式層強制（label 建立 API 永不呼叫、送出前逐一比對白名單）。
+- **GL-10** 【硬性】**卡片操作**（建卡／編輯）只能使用專案**既有** label，不得隱式補建；送出前逐一比對白名單。
+  【2026-08-02 追加需求修訂】label 本身的管理開放為獨立操作（見 7.2.1）；卡片流程仍不得因未知 label 而自動建立。
 - **GL-11** label 白名單以 API 動態讀取（含分頁，全量），快取 TTL 10 分鐘，`/reload` 可強制刷新。
 - **GL-12** 使用者提及的 label 經正規化（全半形、空白、大小寫）後仍無法精確對應時，回覆錯誤並列出至多 5 個名稱最接近的既有 label 供選擇，該次變更不執行。
 - **GL-13** Scoped label 互斥由 bot 端保證：套用 `Status::X` 或 `Team::X` 前，先自最終 label 集合移除同 scope 其他值，再整組寫回。
+
+### 7.2.1 label 管理（2026-08-02 追加需求）
+
+- **GL-24** 支援 label 本身的新增／編輯（改名、換色、改描述）／刪除；每次異動後強制刷新白名單（不等 TTL）。
+- **GL-25** 新增時正規化後同名視為已存在、拒絕重複建立；編輯／刪除目標經 GL-12 正規化解析，無對應時回近似候選。
+- **GL-26** 刪除 label 為破壞性操作：僅在使用者明確指名該 label 時執行，回覆需提醒「已同時自所有卡片移除」。
 
 ### 7.3 編輯卡片
 
@@ -164,6 +171,15 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **DR-9** service account 對共用雲端硬碟僅需檢視者權限；程式僅申請唯讀 scope。
 - **DR-10** 讀取檔案內容（`drive_read_file`）**只供 bot 自己判斷檔案是否符合使用者要找的東西**，不改變 DR-4：內容不得出現在回覆中。程式層限制：(a) 讀取前先做與搜尋同一套的範圍檢查，範圍外檔案一律拒讀；(b) 只取得文字——Google 文件／簡報 export 成 `text/plain`、試算表成 `text/csv`、純文字檔直接下載，PDF／圖片／Office 等二進位檔拒讀；(c) 內容截斷至 8000 字；(d) 全程唯讀（DR-8 不變）。內容以 `<external_data>` 圍欄注入（NFR-6），且工具結果自帶「不得寫給使用者」註記。
 - **DR-11**（跨來源）使用者要找文件／資料而未指定來源時，預設**同時**搜 Google Drive 與 HackMD 兩邊，回覆分開列出並標明來源；某一邊沒有也要說明，兩邊都沒有才回「找不到」。使用者明講「只找雲端硬碟／只找共筆」時才單搜一邊。此規則寫在 system prompt（`agent/prompts.py` 的 `DOC_SEARCH`）。
+
+### 8.1 Google Calendar（DWD，2026-08-02 追加需求）
+
+- **CA-1** 以 service account 的 **domain-wide delegation** 冒用 `.env` 指定帳號（`GOOGLE_DWD_SUBJECT`，現值 `me@yuan-tw.net`）操作其行事曆（`CALENDAR_ID`，預設 primary）；未設定冒用對象時整組工具不註冊。
+- **CA-2** 建立活動：標題、開始／結束（Asia/Taipei；只給日期＝全天）、地點、描述、邀請對象（email，含 Google 群組信箱）；寫入一律 `sendUpdates=all`（寄邀請信）。
+- **CA-3** Meet：可掛**既有** Meet 連結（以 conferenceData 複製語意帶入 conferenceId；「Meet 代碼：大籌」這類指涉由 LLM 依背景知識「會議室連結」解析），或依明確要求開全新 Meet（createRequest）。兩者以既有連結優先。
+- **CA-4** 查詢（日期區間＋關鍵字，供編輯／刪除前取得活動 id）與編輯（標題、時間、邀請對象增減、Meet、描述、地點）。
+- **CA-5** 刪除活動為破壞性操作：僅在使用者明確指名該活動時執行；刪除會通知邀請對象。
+- **CA-6** DWD 未在 Workspace 後台授權 scope 時，回覆可讀的設定指引訊息（不得只回原始 401）。
 
 ---
 
@@ -304,9 +320,10 @@ notify_state                            -- NT-7
 | 服務 | 用途 | 端點（代表性） |
 |---|---|---|
 | Telegram Bot API | 收發訊息 | `getUpdates`（long polling）、`sendMessage`、`sendChatAction` |
-| GitLab REST v4（gitlab.com） | 卡片 | `GET /projects/:id/labels`、`GET/POST /projects/:id/issues`、`PUT /projects/:id/issues/:iid`、`GET/POST /projects/:id/issues/:iid/notes`、`GET /projects/:id/issues?<filters>` |
+| GitLab REST v4（gitlab.com） | 卡片＋label 管理 | `GET/POST /projects/:id/labels`、`PUT/DELETE /projects/:id/labels/:name`、`GET/POST /projects/:id/issues`、`PUT /projects/:id/issues/:iid`、`GET/POST /projects/:id/issues/:iid/notes`、`GET /projects/:id/issues?<filters>` |
 | Google Drive v3 | 檔案搜尋 | `files.list`（`corpora=drive`、`driveId`、`supportsAllDrives`、`includeItemsFromAllDrives`、`q=name/fullText contains`）、`files.get`（metadata） |
 | Google Sheets v4 | 名冊 | `spreadsheets.get`（以 gid 對應分頁名）、`spreadsheets.values.get` |
+| Google Calendar v3（DWD 冒用） | 行事曆 | `events.insert/patch/get/list/delete`（`conferenceDataVersion=1`、`sendUpdates=all`） |
 | HackMD API v1（api.hackmd.io/v1） | 筆記 | `GET /teams/:path/notes`、`POST /teams/:path/notes`、`GET /notes/:id`、`PATCH`（team note 更新）、Team Folders 相關端點（列出／建立資料夾、於資料夾內建立筆記）——實作時以官方 Swagger（api.hackmd.io/v1/docs）為準 |
 | LLM API | 語意解析與生成 | Anthropic Messages API（含 thinking）／OpenAI 相容 chat completions（含 tool calling） |
 
@@ -337,9 +354,9 @@ notify_state                            -- NT-7
 
 ## 15. Out of Scope（明確排除）
 
-1. 刪除任何資源（GitLab issue、HackMD 筆記／資料夾、Drive 檔案）。
+1. 刪除任何資源（GitLab issue、HackMD 筆記／資料夾、Drive 檔案）——**2026-08-02 修訂：GitLab label 與行事曆活動的刪除除外（GL-26、CA-5）**。
 2. GitLab issue 的 open／close／reopen state 變更。
-3. 建立 GitLab label；建立 HackMD 組別層級資料夾（唯一例外：HM-9 之「會議文件」子資料夾）。
+3. ~~建立 GitLab label~~（2026-08-02 修訂：改依 7.2.1 開放 label 管理）；建立 HackMD 組別層級資料夾（唯一例外：HM-9 之「會議文件」子資料夾）。
 4. Google Drive 的任何寫入（建立／編輯／移動／權限）與任何內容讀取・回傳。
 5. Merge request 相關功能。
 6. Milestone、weight、epic、iteration、issue link 等未列欄位。

@@ -24,6 +24,19 @@ async def test_prompt_with_charter() -> None:
     assert "負責官網與報名系統" in s
 
 
+async def test_prompt_with_knowledge() -> None:
+    s = await _build(PromptData(labels=["Status::Inbox"], knowledge="## 會議室代碼\nR1＝資訊所 106"))
+    assert "R1＝資訊所 106" in s
+    assert "背景知識" in s
+
+
+async def test_prompt_without_knowledge_omits_section() -> None:
+    """背景知識缺檔時整段省略，不留空段落也不加提示（行為規則裡的固定字樣不算）。"""
+    s = await _build(PromptData(labels=["Status::Inbox"]))
+    assert "背景知識（籌備團隊內部常識" not in s  # 段落標頭不出現
+    assert "\n\n\n" not in s  # 空段落不應造成三連換行
+
+
 async def test_prompt_roster_unavailable_notice() -> None:
     s = await _build(PromptData(labels=["Status::Inbox"], roster_rows=[], roster_available=False))
     assert "名冊：目前暫不可用" in s  # EC-11

@@ -1,9 +1,11 @@
 """GitLab client（GL-1～GL-23）。
 
 作用範圍限定 `sitcon-tw/2027` 單一專案。硬性防線在此程式層強制：
-  GL-10  只用既有 label，永不呼叫建立 label API；寫入前逐一比對白名單。
+  GL-10  建卡／編輯卡片只用既有 label，寫入前逐一比對白名單。
+         【2026-08-02 追加需求例外】label 本身的管理（create_label／update_label／delete_label）
+         開放為獨立操作；每次異動後強制刷新白名單，卡片操作仍受白名單約束。
   GL-13  scoped label 互斥由 client 端保證（組最終 label 集合時先移除同 scope 舊值）。
-  GL-16  不實作任何 state 變更（close/reopen）與刪除；payload 永不含 state_event。
+  GL-16  不實作任何 issue state 變更（close/reopen）與 issue 刪除；payload 永不含 state_event。
 
 外部 I/O 抽象為 GitLabBackend（可注入假物件測試）；client 疊上白名單、scoped 互斥、
 attribution（GL-8）、多 assignee 落差偵測（GL-6）、重試（EC-9）與憑證錯誤（EC-10）。
@@ -225,6 +227,9 @@ class GitLabBackend(Protocol):
     """同步 GitLab 存取抽象；回傳/接收 plain dict。實作可為 python-gitlab 或測試假物件。"""
 
     def list_labels(self) -> list[str]: ...
+    def create_label(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def update_label(self, name: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def delete_label(self, name: str) -> None: ...
     def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     def get_issue(self, iid: int) -> dict[str, Any]: ...
     def update_issue(self, iid: int, payload: dict[str, Any]) -> dict[str, Any]: ...
@@ -294,6 +299,64 @@ class GitLabClient:
                 raise LabelNotFoundError(name, index.nearest(name))
             out.append(canon)
         return out
+
+    # -------------------- label 管理（2026-08-02 追加需求）-------------------- #
+    # 卡片操作的白名單約束（GL-10）不變；這裡是 label 本身的 CRUD，每次異動後強制刷新白名單，
+    # 讓後續建卡／編輯立即看得到新集合。
+    async def create_label(self, *, name: str, color: str, description: str | None = None) -> str:
+        """建立新 label；已存在（正規化後同名）則拒絕。回傳建立後的正式名稱。"""
+        index = await self.get_label_index()
+        existing = index.resolve(name)
+        if existing is not None:
+            raise GitLabError(f"label「{existing}」已存在，未重複建立。")
+        payload: dict[str, Any] = {"name": name, "color": color}
+        if description:
+            payload["description"] = description
+        raw = await self._call(self._b.create_label, payload)
+        await self.get_label_index(force=True)
+        return str(raw.get("name", name))
+
+    async def update_label(
+        self,
+        name: str,
+        *,
+        new_name: str | None = None,
+        color: str | None = None,
+        description: str | None = None,
+    ) -> str:
+        """編輯既有 label（改名／換色／改描述）。回傳編輯後的正式名稱。
+
+        description 傳空字串＝清除描述；None＝不變。改名目標與其他既有 label 撞名時拒絕。
+        """
+        index = await self.get_label_index()
+        canon = index.resolve(name)
+        if canon is None:
+            raise LabelNotFoundError(name, index.nearest(name))
+        payload: dict[str, Any] = {}
+        if new_name is not None and new_name != canon:
+            clash = index.resolve(new_name)
+            if clash is not None and clash != canon:
+                raise GitLabError(f"改名失敗：label「{clash}」已存在。")
+            payload["new_name"] = new_name
+        if color is not None:
+            payload["color"] = color
+        if description is not None:
+            payload["description"] = description
+        if not payload:
+            return canon
+        raw = await self._call(self._b.update_label, canon, payload)
+        await self.get_label_index(force=True)
+        return str(raw.get("name", payload.get("new_name", canon)))
+
+    async def delete_label(self, name: str) -> str:
+        """刪除既有 label（會同時自所有卡片移除）。回傳被刪除的正式名稱。"""
+        index = await self.get_label_index()
+        canon = index.resolve(name)
+        if canon is None:
+            raise LabelNotFoundError(name, index.nearest(name))
+        await self._call(self._b.delete_label, canon)
+        await self.get_label_index(force=True)
+        return canon
 
     # -------------------------- 建卡 -------------------------- #
     async def create_issue(
@@ -544,6 +607,23 @@ class PyGitlabBackend:
         with _map_errors():
             labels = self._get_project().labels.list(get_all=True)  # 全量分頁（GL-11）
         return [label.name for label in labels]
+
+    def create_label(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with _map_errors():
+            obj = self._get_project().labels.create(payload)
+        return dict(obj.attributes)
+
+    def update_label(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with _map_errors():
+            label = self._get_project().labels.get(name)
+            for key, value in payload.items():
+                setattr(label, key, value)
+            label.save()
+        return dict(label.attributes)
+
+    def delete_label(self, name: str) -> None:
+        with _map_errors():
+            self._get_project().labels.delete(name)
 
     def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
         with _map_errors():

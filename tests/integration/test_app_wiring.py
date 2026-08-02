@@ -34,3 +34,43 @@ async def test_app_run_wiring_constructs(tmp_path: Path, monkeypatch: pytest.Mon
     await app_module.run(settings)
 
     assert (tmp_path / "wiring.sqlite3").exists()  # DB 有建立
+
+
+async def test_app_run_wiring_with_calendar_dwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GOOGLE_DWD_SUBJECT 設定時 calendar 工具接線也要能完整建構（gateway 建構前不觸網）。"""
+    captured: dict[str, object] = {}
+
+    async def _fake_gateway_run(self: object, stop: object) -> None:
+        return None
+
+    original_registry = app_module.ToolRegistry
+
+    def _capture_registry(tools: list) -> object:  # type: ignore[type-arg]
+        reg = original_registry(tools)
+        captured["names"] = reg.names()
+        return reg
+
+    monkeypatch.setattr("sitcon_bot.telegram.gateway.Gateway.run", _fake_gateway_run)
+    monkeypatch.setattr(app_module, "ToolRegistry", _capture_registry)
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        telegram_bot_token="123:abc",
+        telegram_admin_id=1,
+        llm_api_key="test-key",
+        gitlab_token="glpat-x",
+        hackmd_token="hmd-x",
+        hackmd_team_path="sitcon",
+        google_dwd_subject="me@yuan-tw.net",
+        db_path=str(tmp_path / "wiring-cal.sqlite3"),
+    )
+    await app_module.run(settings)
+
+    names = captured["names"]
+    assert "calendar_create_event" in names
+    assert "calendar_list_events" in names
+    assert "calendar_update_event" in names
+    assert "calendar_delete_event" in names
+    assert "gitlab_create_label" in names
+    assert "gitlab_update_label" in names
+    assert "gitlab_delete_label" in names

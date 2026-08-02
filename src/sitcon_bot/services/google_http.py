@@ -18,12 +18,20 @@ GOOGLE_HTTP_TIMEOUT = 30  # 秒：連線/讀取逾時
 GOOGLE_NUM_RETRIES = 3  # execute() 對 5xx／429 的自動退避重試次數
 
 
-def build_google_service(api: str, version: str, sa_json_path: str, scopes: list[str]) -> tuple[Any, Any]:
-    """回傳 (service, creds)。service 僅用來組 request 並可重用；I/O 一律走 request_http(creds)。"""
+def build_google_service(
+    api: str, version: str, sa_json_path: str, scopes: list[str], subject: str | None = None
+) -> tuple[Any, Any]:
+    """回傳 (service, creds)。service 僅用來組 request 並可重用；I/O 一律走 request_http(creds)。
+
+    subject：domain-wide delegation 冒用的使用者 email（Calendar 用）；需在 Workspace 管理後台
+    對此 service account 的 client ID 授權對應 scope，否則 API 會回 unauthorized_client。
+    """
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
 
     creds = service_account.Credentials.from_service_account_file(sa_json_path, scopes=scopes)
+    if subject:
+        creds = creds.with_subject(subject)
     # service 內建的 http 不會被實際使用（每次 execute 帶自己的 http）；用 credentials 建即可。
     service = build(api, version, credentials=creds, cache_discovery=False)
     return service, creds

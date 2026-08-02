@@ -81,8 +81,9 @@ async def test_b_cannot_create_new_label() -> None:
             requester="@yuan",
         )
     assert backend.create_called is False
-    # 結構上無建立 label 的方法
-    assert not hasattr(GitLabClient, "create_label")
+    # 2026-08-02 起 label 管理（create_label 等）為明確的獨立操作；
+    # 卡片操作的防線改為：未知 label 一律拒絕，絕不隱式補建（backend 未提供 create_label，
+    # 若 client 在卡片流程偷呼叫會直接 AttributeError 使測試失敗）。
     assert not hasattr(backend, "create_label")
 
     # 經工具層亦回 GL-12 訊息、不送出

@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     milestone_sheet_id: str = "1esryzLBpnE51NIUU4-prwG0RrnG3W4eYQJ6FZSigFPQ"
     milestone_sheet_gid: int = 0  # 「工作表1」；以 gid 解析分頁名再讀值
 
+    # --- Google Calendar（DWD，2026-08-02 追加需求）---
+    # 冒用對象 email；留空＝停用 calendar 功能（工具不註冊）。需在 Workspace 後台對
+    # service account 的 client ID 授權 https://www.googleapis.com/auth/calendar scope。
+    google_dwd_subject: str = ""
+    calendar_id: str = "primary"  # 操作冒用對象的哪本行事曆
+
     # --- 里程碑預告（NT-*）---
     milestone_notify_enabled: bool = True
     milestone_notify_hour: int = 23  # Asia/Taipei，預告「隔天」的事項＋當日過期卡片提醒
@@ -106,6 +112,7 @@ class Settings(BaseSettings):
 
     # --- 其他 ---
     team_charter_path: str = "role.md"  # 職掌文件（RO-8）；供 LLM 判斷組別；/reload 重載
+    knowledge_path: str = "config/knowledge.md"  # 背景知識（會議室代碼等內部常識）；/reload 重載
     tz: str = "Asia/Taipei"
     context_ttl_seconds: int = 1800
     context_max_turns: int = 10
@@ -173,6 +180,12 @@ class Settings(BaseSettings):
             f"                  api_key={mask(self.llm_api_key)}  base_url={self.llm_base_url or '<預設>'}",
             f"  GitLab        : {self.gitlab_url}  project={self.gitlab_project}  token={mask(self.gitlab_token)}",
             f"  Drive         : drive_id={self.drive_shared_drive_id}  scope={self.drive_scope_folder_names}",
+            "  Calendar(DWD) : "
+            + (
+                f"subject={self.google_dwd_subject}  calendar={self.calendar_id}"
+                if self.google_dwd_subject
+                else "停用（GOOGLE_DWD_SUBJECT 未設定）"
+            ),
             f"  名冊 Sheet     : id={self.roster_sheet_id}  gid={self.roster_sheet_gid}",
             f"  HackMD        : team={self.hackmd_team_path}  token={mask(self.hackmd_token)}",
             f"                  year_folder={self.hackmd_year_folder}  "

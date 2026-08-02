@@ -199,8 +199,9 @@ docker compose restart
   docker compose up -d
   ```
 
-- **設定檔熱更新**：`config/team_charter.md`（職掌文件）與 `config/templates/*.md`（會議模板）
-  改完後，在授權群組執行 `/reload` 即生效，不需重啟。
+- **設定檔熱更新**：`role.md`（職掌文件，路徑見 `TEAM_CHARTER_PATH`）、`config/knowledge.md`
+  （背景知識：會議室代碼等內部常識，路徑見 `KNOWLEDGE_PATH`）與 `config/templates/*.md`
+  （會議模板）改完後，在授權群組執行 `/reload` 即生效，不需重啟。
 
 ---
 
@@ -245,11 +246,14 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
                         │  system prompt = 人設＋規則＋文件搜尋規則＋今日＋label 白名單＋名冊(白名單欄位)＋職掌
                         ├─▶ LLM adapter（Anthropic / OpenAI 相容；adaptive thinking）
                         └─▶ tools（pydantic 驗證 → 執行）
-                              ├ gitlab_*  → GitLabClient（label 白名單／scoped 互斥／無 state 變更）
+                              ├ gitlab_*  → GitLabClient（label 白名單／scoped 互斥／無 state 變更；
+                              │              含 label 管理 create/update/delete，異動即刷新白名單）
                               ├ resolve_person → 名冊（RO-2 白名單）
                               ├ drive_search/_read_file → DriveClient（搜尋只回 metadata；
                               │                            內容僅供判斷相關性，不外流）
-                              └ hackmd_*  → HackMDClient（notes／team folders／模板）
+                              ├ hackmd_*  → HackMDClient（notes／team folders／模板）
+                              └ calendar_* → CalendarService（DWD 冒用 GOOGLE_DWD_SUBJECT；
+                                             邀請對象／既有 Meet 連結／新 Meet）
    SQLite（授權清單、稽核）持久化於 volume
 ```
 
@@ -263,7 +267,7 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
 
 | 硬性條款 | 強制位置 |
 |---|---|
-| GL-10 只用既有 label、不建立 | `services/gitlab_client.py`：寫入前逐一比對白名單，無建立 label 方法 |
+| GL-10 卡片操作只用既有 label | `services/gitlab_client.py`：寫入前逐一比對白名單，未知 label 拒絕、不隱式補建（label 管理為 2026-08-02 起的獨立明確操作，異動後強制刷新白名單） |
 | GL-16 不變更 issue 開關/刪除 | `gitlab_client.py`：不實作 state/delete，payload 永不含 `state_event` |
 | DR-4 只回 metadata | `services/drive_client.py`：回傳型別只有 `{name,path,url,mime}` |
 | RO-2 名冊欄位白名單 | `services/sheets_roster.py`：僅白名單欄位落地，`Member` 結構不承載其他欄位 |

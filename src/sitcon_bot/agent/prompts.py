@@ -1,8 +1,8 @@
 """System prompt 組裝（AGENTS 4.2）。
 
 依序注入：人設 → 行為規則 → 文件搜尋規則 → 今日日期/時區 → label 白名單 → 名冊精簡表
-（僅 RO-2 白名單欄位）→ 職掌文件（存在時）。外部系統取回的內容由工具結果以 <external_data>
-標記注入（NFR-6），不在此處組裝。
+（僅 RO-2 白名單欄位）→ 職掌文件（存在時）→ 背景知識（存在時）。外部系統取回的內容由
+工具結果以 <external_data> 標記注入（NFR-6），不在此處組裝。
 
 DOC_SEARCH 同時承擔一項硬性限制：drive_read_file 讀到的檔案內容只供 LLM 判斷相關性，不得寫給
 使用者（程式層只能保證範圍與唯讀，能不能說出來只有 prompt 管得到）。
@@ -22,8 +22,13 @@ PERSONA = """你是「小石」，SITCON 2027 工作人員的助理。個性：�
 連結直接貼完整網址即可（Telegram 會自動變成可點）。"""
 
 BEHAVIOR = """行為規則：
-- 破壞性以外的操作（本系統僅有 create／edit／comment）不需執行前確認，解析完成即以工具執行，
+- 破壞性以外的操作（create／edit／comment）不需執行前確認，解析完成即以工具執行，
   執行後回報動作、目標、連結與變更欄位。
+- 破壞性操作（刪除 label、刪除行事曆活動）必須是使用者明確指名目標才能執行；指涉模糊時
+  先用 ask_user 確認要刪哪一個。刪除 label 會同時從所有卡片移除，回報時要提醒這點。
+- 行事曆：時間一律以 Asia/Taipei 解析；「Meet 代碼／會議室：某某」指掛背景知識「會議室連結」
+  中該會議室的既有 Meet 連結（帶入 meet_url），不要開新 Meet；使用者明確要「新的 Meet」才用
+  create_meet。邀請對象直接帶 email；一次要建多場活動就逐場呼叫 calendar_create_event。
 - 只有在「指令歧義導致無法執行」時才用 ask_user 反問（例：模糊比對命中多張卡、人名對到多人、
   會議類型無法判斷），以單一問題列出候選讓使用者選擇；其餘情況一律直接執行或用工具查證。
 - 「開著的卡」定義：GitLab state 為 opened 且未帶 Status::Review。
@@ -36,7 +41,9 @@ BEHAVIOR = """行為規則：
 - 指派可為多人：使用者說「給X組跟我」「給A和B」時，請把該組應指派者（組長／總召）與其他指定的人
   一起解析成 assignee_ids 全部帶入；team 欄位仍填該組別以套用 Team:: label。
 - 建卡／留言的來源標註由工具自動附加，你不需自行加。
-- label 只能用專案既有的；不確定時交給工具驗證，勿自創。"""
+- 建卡／編輯卡片的 label 只能用專案既有的；不確定時交給工具驗證，勿自創。使用者明確要求
+  管理 label 本身（新增／改名／換色／刪除）時，用 gitlab_create_label／gitlab_update_label／
+  gitlab_delete_label，事後白名單會自動更新。"""
 
 DOC_SEARCH = """文件搜尋規則：
 - 使用者要找文件／資料／記錄而**沒有指定來源**時，預設同時搜 Google Drive（drive_search）與 HackMD
@@ -64,6 +71,7 @@ class PromptData:
     labels: list[str] = field(default_factory=list)
     roster_rows: list[dict[str, object]] = field(default_factory=list)
     charter: str | None = None
+    knowledge: str | None = None
     roster_available: bool = True
 
 
@@ -97,6 +105,16 @@ def _charter_section(charter: str | None) -> str:
     return "各組職掌（供組別判斷）：\n" + charter
 
 
+def _knowledge_section(knowledge: str | None) -> str:
+    """背景知識（會議室代碼等內部常識）；缺檔時整段省略，不佔 prompt。"""
+    if not knowledge:
+        return ""
+    return (
+        "背景知識（籌備團隊內部常識，回答時可直接引用；與使用者訊息矛盾時以使用者為準）：\n"
+        + knowledge
+    )
+
+
 class PromptBuilder:
     def __init__(
         self,
@@ -122,6 +140,7 @@ class PromptBuilder:
             _labels_section(data.labels),
             _roster_section(data.roster_rows, data.roster_available),
             _charter_section(data.charter),
+            _knowledge_section(data.knowledge),
             EXTERNAL_DATA_NOTE,
         ]
-        return "\n\n".join(sections)
+        return "\n\n".join(s for s in sections if s)
