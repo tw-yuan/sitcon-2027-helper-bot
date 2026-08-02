@@ -108,8 +108,9 @@ async def test_create_event_with_attendees_and_existing_meet() -> None:
         meet_url="https://meet.google.com/uee-eyar-cos",
     )
     body = gw.last_insert_body
-    assert body["start"] == {"dateTime": "2026-08-15T17:00", "timeZone": "Asia/Taipei"}
-    assert body["end"] == {"dateTime": "2026-08-15T20:00", "timeZone": "Asia/Taipei"}
+    # dateTime 必須含秒數（缺秒 Google 回 400，2026-08-03 真 API 驗證）
+    assert body["start"] == {"dateTime": "2026-08-15T17:00:00", "timeZone": "Asia/Taipei"}
+    assert body["end"] == {"dateTime": "2026-08-15T20:00:00", "timeZone": "Asia/Taipei"}
     assert body["attendees"] == [{"email": "sitcon@googlegroups.com"}]
     assert body["conferenceData"]["conferenceId"] == "uee-eyar-cos"
     assert ev.meet_url == "https://meet.google.com/uee-eyar-cos"

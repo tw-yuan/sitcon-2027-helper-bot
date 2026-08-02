@@ -98,11 +98,16 @@ def meet_conference_data(meet_url: str) -> dict[str, Any]:
 
 
 def _time_field(value: str, tz: str) -> dict[str, str]:
-    """'YYYY-MM-DD HH:MM'（或 ISO）→ dateTime＋timeZone；只有日期 → 全天活動的 date。"""
+    """'YYYY-MM-DD HH:MM'（或 ISO）→ dateTime＋timeZone；只有日期 → 全天活動的 date。
+
+    dateTime 必須是完整 RFC3339——**沒有秒數 Google 會回 400**，故一律補齊 :00。
+    """
     v = value.strip().replace(" ", "T")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
         return {"date": v}
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?", v):
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", v):
+        v += ":00"
+    elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", v):
         raise CalendarError(f"時間格式看不懂：{value}（用 YYYY-MM-DD HH:MM，或全天活動只給 YYYY-MM-DD）")
     return {"dateTime": v, "timeZone": tz}
 
