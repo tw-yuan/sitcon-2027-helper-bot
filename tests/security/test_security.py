@@ -2,7 +2,7 @@
 
 (a) 名冊白名單外欄位不外洩（RO-2）
 (b) 不得建立新 label（GL-10）
-(c) Drive 搜尋只回 metadata（DR-4）、讀內容限範圍內且僅供 LLM 判斷（DR-1）
+(c) Drive 搜尋只回 metadata（DR-4）、讀內容限範圍內（DR-1）、（私）路徑標示私有（DR-4 修訂）
 (d) 外部內容中的指令不改變行為（NFR-6：標記為資料）
 (e) 未授權群組／私訊全功能拒絕（AUTH-4/5）
 """
@@ -106,11 +106,13 @@ _DRIVE_FILES = {
     "in": {"id": "in", "name": "評估.gdoc", "parents": ["f1"], "mimeType": _GDOC, "webViewLink": "u1"},
     "out": {"id": "out", "name": "別人的.gdoc", "parents": ["x1"], "mimeType": _GDOC, "webViewLink": "u2"},
     "pdf": {"id": "pdf", "name": "合約.pdf", "parents": ["f1"], "mimeType": "application/pdf", "webViewLink": "u3"},
+    "priv": {"id": "priv", "name": "薪資.gdoc", "parents": ["p1"], "mimeType": _GDOC, "webViewLink": "u4"},
 }
 _DRIVE_FOLDERS = {
     "root": {"id": "root", "name": "SITCON 2027", "parents": []},
     "f1": {"id": "f1", "name": "合約", "parents": ["root"]},
     "x1": {"id": "x1", "name": "他人資料夾", "parents": []},  # 走不到範圍根
+    "p1": {"id": "p1", "name": "行政組（私）", "parents": ["root"]},  # （私）標記資料夾
 }
 
 
@@ -151,20 +153,38 @@ async def test_c_drive_read_rejects_out_of_scope_and_binary() -> None:
     assert backend.fetched == ["in"]  # 被拒的兩個檔案完全沒去抓內容
 
 
-async def test_c_drive_read_tool_marks_content_internal_only() -> None:
-    """工具層必附「不得寫給使用者」註記，且內容包在資料圍欄內（NFR-6）。"""
+async def test_c_drive_private_path_marked_and_note_enforced() -> None:
+    """DR-4（2026-08-03 修訂）：（私）路徑檔案由程式層標示 private，工具結果自帶不得外流註記；
+    非（私）檔案標示可引用。私／非私依路徑判定，內文無從偽裝。"""
+    service = _drive_service(_DriveBackend())
+
+    private = await service.read_file("priv")
+    assert private.private is True
+    normal = await service.read_file("in")
+    assert normal.private is False
+
+    tool = DriveReadFileTool(service)
+    reply_private = await tool.run(DriveReadFileArgs(file_id="priv"), CTX)
+    assert "【（私）檔案" in reply_private and "不得轉述" in reply_private
+    reply_normal = await tool.run(DriveReadFileArgs(file_id="in"), CTX)
+    assert "可正常引用" in reply_normal and "不得轉述" not in reply_normal
+
+
+async def test_c_drive_read_tool_fences_content_as_data() -> None:
+    """工具層一律把內容包在資料圍欄內（NFR-6），並依私／非私附上對應註記。"""
     tool = DriveReadFileTool(_drive_service(_DriveBackend()))
     reply = await tool.run(DriveReadFileArgs(file_id="in"), CTX)
-    assert "不得轉述" in reply
     assert "<external_data>" in reply and "機密內容" in reply
+    assert "可正常引用" in reply  # 非（私）路徑
 
 
-async def test_c_prompt_forbids_relaying_drive_content() -> None:
+async def test_c_prompt_forbids_relaying_private_drive_content() -> None:
     async def provider() -> PromptData:
         return PromptData(labels=[])
 
     prompt = await PromptBuilder(provider).build()
     assert "drive_read_file" in prompt
+    assert "路徑含「（私）」" in prompt
     assert "不可以寫給使用者看" in prompt
 
 

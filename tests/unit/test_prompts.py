@@ -43,11 +43,13 @@ async def test_prompt_roster_unavailable_notice() -> None:
 
 
 async def test_prompt_doc_search_rules() -> None:
-    """找文件預設兩邊都查；Drive 內容只給自己判斷，不可寫給使用者。"""
+    """找文件預設兩邊都查；（私）路徑的 Drive 內容只給自己判斷，不可寫給使用者，其餘可引用。"""
     s = await _build(PromptData(labels=["Status::Inbox"]))
     assert "drive_search" in s and "hackmd_search_notes" in s
     assert "drive_read_file" in s
-    assert "不可以寫給使用者看" in s
+    assert "路徑含「（私）」" in s
+    assert "不可以寫給使用者看" in s  # （私）檔案硬性規則仍在
+    assert "預設可正常引用" in s  # 非（私）已放寬
 
 
 async def test_prompt_roster_only_whitelist_rows() -> None:

@@ -7,7 +7,7 @@ GitLab 卡片、Google 共用雲端硬碟檔案搜尋、HackMD 筆記三大類�
 - **實作指引**：[AGENTS.md](AGENTS.md)
 
 > 小石只在**被授權的群組**內服務，以自然語言操作三個系統；破壞性以外的操作直接執行、
-> 執行後回報結果，錯誤時給明確可行動的訊息；名冊個資與 Drive 檔案內容零外洩。
+> 執行後回報結果，錯誤時給明確可行動的訊息；名冊個資與（私）路徑的 Drive 檔案內容零外洩。
 
 ---
 
@@ -35,7 +35,7 @@ GitLab 卡片、Google 共用雲端硬碟檔案搜尋、HackMD 筆記三大類�
 | GitLab 開卡（自動判斷組別、指派組長） | 「小石 幫我開一張卡：官網倒數計時器壞了」 |
 | GitLab 指定細節開卡 | 「小石 開卡給行政組，標題場地保證金匯款，due 8/15」 |
 | GitLab 編輯/留言/查詢 | 「小石 把 #42 改成 Doing，加 0913 一籌」「小石 列出行政組還開著的卡」 |
-| 找文件（Drive＋HackMD 一起找，回覆只給檔名與連結） | 「小石 幫我找去年的場地租借合約」 |
+| 找文件（Drive＋HackMD 一起找；（私）路徑檔案只給檔名與連結） | 「小石 幫我找去年的場地租借合約」 |
 | HackMD 開/找/改筆記 | 「小石 開一份 0913 一籌的會議記錄」「小石 找上次討論贊助方案的文件」 |
 | 里程碑預告（主動通知） | 每天 23:00 自動預告隔天的籌備時程事項＋過期 GitLab 卡片提醒（tag assignee），可依群組設定要收哪些組別 |
 
@@ -250,14 +250,14 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
                               │              含 label 管理 create/update/delete，異動即刷新白名單）
                               ├ resolve_person → 名冊（RO-2 白名單）
                               ├ drive_search/_read_file → DriveClient（搜尋只回 metadata；
-                              │                            內容僅供判斷相關性，不外流）
+                              │                            （私）路徑內容不外流，其餘可引用）
                               ├ hackmd_*  → HackMDClient（notes／team folders／模板）
                               └ calendar_* → CalendarService（DWD 冒用 GOOGLE_DWD_SUBJECT；
                                              邀請對象／既有 Meet 連結／新 Meet）
    SQLite（授權清單、稽核）持久化於 volume
 ```
 
-- 觸發過濾、授權判定、label 白名單、scoped 互斥、名冊欄位白名單、Drive 內容不外流、
+- 觸發過濾、授權判定、label 白名單、scoped 互斥、名冊欄位白名單、Drive（私）路徑標示、
   HackMD 無刪除等**硬性限制皆在程式層強制**，不依賴 prompt（NFR-5）。
 - 對話脈絡以（群組, topic）保留最近互動供指代，30 分鐘或 10 輪失效（TRIG-4）。
 
@@ -269,7 +269,7 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
 |---|---|
 | GL-10 卡片操作只用既有 label | `services/gitlab_client.py`：寫入前逐一比對白名單，未知 label 拒絕、不隱式補建（label 管理為 2026-08-02 起的獨立明確操作，異動後強制刷新白名單） |
 | GL-16 不變更 issue 開關/刪除 | `gitlab_client.py`：不實作 state/delete，payload 永不含 `state_event` |
-| DR-4 只回 metadata | `services/drive_client.py`：回傳型別只有 `{name,path,url,mime}` |
+| DR-4 搜尋只回 metadata；（私）內容不外流 | `services/drive_client.py`：搜尋結果型別只有 `{name,path,url,mime}`；讀取結果依路徑標示 `private`（（私）／半形 (私) 任一層命中即私），prompt 據此禁止外流 |
 | RO-2 名冊欄位白名單 | `services/sheets_roster.py`：僅白名單欄位落地，`Member` 結構不承載其他欄位 |
 | HM-16 不刪除筆記/資料夾 | `services/hackmd_client.py`：無 delete 方法 |
 | NFR-6 外部內容為資料非指令 | 工具結果以 `<external_data>` 標記注入 |

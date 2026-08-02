@@ -31,6 +31,7 @@ FOLDERS_META: dict[str, dict[str, Any]] = {
     "v1": {"id": "v1", "name": "場地", "parents": ["c1"]},
     "c2": {"id": "c2", "name": "舊合約", "parents": ["s26"]},
     "o1": {"id": "o1", "name": "其他", "parents": []},
+    "p1": {"id": "p1", "name": "行政組（私）", "parents": ["s27"]},
 }
 
 FILES = [
@@ -132,6 +133,7 @@ READ_FILES = [
     {"id": "d3", "name": "筆記.txt", "parents": ["s27"], "mimeType": "text/plain", "webViewLink": "u3"},
     {"id": "d4", "name": "合約.pdf", "parents": ["v1"], "mimeType": "application/pdf", "webViewLink": "u4"},
     {"id": "d5", "name": "範圍外.gdoc", "parents": ["o1"], "mimeType": GDOC, "webViewLink": "u5"},
+    {"id": "d6", "name": "薪資表.gsheet", "parents": ["p1"], "mimeType": GSHEET, "webViewLink": "u6"},
 ]
 
 
@@ -188,6 +190,28 @@ async def test_read_truncates_long_content() -> None:
     content = await svc.read_file("d1")
     assert len(content.text) == CONTENT_LIMIT
     assert content.truncated is True
+
+
+# --------------------------------------------------------------------------- #
+# （私）標記（DR-4 2026-08-03 修訂）
+# --------------------------------------------------------------------------- #
+def test_is_private_path_markers() -> None:
+    from sitcon_bot.services.drive_client import is_private_path
+
+    assert is_private_path("SITCON 2027/行政組（私）/薪資表.gsheet") is True
+    assert is_private_path("SITCON 2027/議程組(私)/稿件.gdoc") is True  # 半形也算
+    assert is_private_path("SITCON 2027/機密名單（私）.gdoc") is True  # 檔名帶標記也算（寧枉勿縱）
+    assert is_private_path("SITCON 2027/合約/場地評估.gdoc") is False
+    assert is_private_path("SITCON 2027/私人物品清單.gdoc") is False  # 單一「私」字不算
+
+
+async def test_read_marks_private_by_path() -> None:
+    svc, _ = _read_service()
+    private = await svc.read_file("d6")  # 行政組（私）內
+    assert private.private is True
+    assert private.file.path == "SITCON 2027/行政組（私）/薪資表.gsheet"
+    normal = await svc.read_file("d1")
+    assert normal.private is False
 
 
 def test_content_mode_table() -> None:

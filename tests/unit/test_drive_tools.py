@@ -1,4 +1,4 @@
-"""T10：Drive 工具回覆格式（DR-4/5/7）與 drive_read_file（內容僅供判斷、不外流）。"""
+"""T10：Drive 工具回覆格式（DR-4/5/7）與 drive_read_file（（私）路徑內容僅供判斷、不外流；其餘可引用）。"""
 
 from __future__ import annotations
 
@@ -83,14 +83,14 @@ async def test_service_not_configured() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# drive_read_file：內容只給 LLM 判斷用
+# drive_read_file：（私）內容只給 LLM 判斷用；非（私）可引用（DR-4 2026-08-03 修訂）
 # --------------------------------------------------------------------------- #
 def _content_tool(content) -> tuple[DriveReadFileTool, FakeService]:
     service = FakeService(EMPTY, content)
     return DriveReadFileTool(service), service
 
 
-async def test_read_file_returns_fenced_content_with_internal_only_note() -> None:
+async def test_read_file_normal_content_is_shareable() -> None:
     content = DriveContent(
         file=DriveFile("場地評估.gdoc", "SITCON 2027/合約/場地評估.gdoc", "https://drive/1", None, "d1"),
         text="租金 12 萬",
@@ -100,8 +100,22 @@ async def test_read_file_returns_fenced_content_with_internal_only_note() -> Non
     assert service.read_ids == ["d1"]  # 前後空白已清掉
     assert "租金 12 萬" in reply
     assert "<external_data>" in reply  # NFR-6：內容視為資料非指令
-    assert "不得轉述" in reply  # 明示不可寫給使用者
+    assert "可正常引用" in reply  # 非（私）→ 可寫給使用者
+    assert "不得轉述" not in reply
     assert "https://drive/1" in reply
+
+
+async def test_read_file_private_path_keeps_internal_only_note() -> None:
+    content = DriveContent(
+        file=DriveFile("薪資表.gsheet", "SITCON 2027/行政組（私）/薪資表.gsheet", "https://drive/2", None, "d2"),
+        text="時薪 300",
+        private=True,
+    )
+    tool, _ = _content_tool(content)
+    reply = await tool.run(DriveReadFileArgs(file_id="d2"), CTX)
+    assert "【（私）檔案" in reply
+    assert "不得轉述" in reply  # 明示不可寫給使用者
+    assert "可正常引用" not in reply
 
 
 async def test_read_file_truncation_note() -> None:

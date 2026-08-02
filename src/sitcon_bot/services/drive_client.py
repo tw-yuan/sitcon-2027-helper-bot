@@ -8,12 +8,15 @@ corpora=allDrives + includeItemsFromAllDrives + supportsAllDrives。
 並就地組出路徑；folder metadata 以快取避免重複查詢。API 呼叫量因此只隨命中筆數增長，不需先枚舉
 整棵資料夾樹（避免大量資料夾時逾時）。
 
-【DR-4】搜尋結果（search）只回 metadata：檔名、路徑、Drive URL、檔案類型、檔案 ID。檔案內容另有
-唯讀的 read_file，供 LLM 自行判斷哪份檔案才是使用者要找的（相關性判斷）——**內容不得寫給使用者**，
-該限制由 system prompt 規範（見 agent/prompts.py 文件搜尋規則），程式層僅保證：
+【DR-4，2026-08-03 修訂】搜尋結果（search）只回 metadata：檔名、路徑、Drive URL、檔案類型、檔案 ID。
+檔案內容另有唯讀的 read_file；**只有路徑任一層含「（私）」（全形或半形）的檔案**，內容僅供 LLM
+判斷相關性、不得寫給使用者——其餘檔案內容可正常引用。此區分由程式層在讀取結果標示
+（DriveContent.private，依 is_private_path 判定），「不得外流」本身由 system prompt 規範
+（見 agent/prompts.py 文件搜尋規則），程式層僅保證：
   1. 讀取一律先做範圍檢查，範圍外檔案讀不到（DR-1）；
   2. 只讀得出文字（Google 文件/試算表/簡報 export、純文字檔 download），二進位檔一律拒絕；
-  3. 全程唯讀，仍不寫入任何東西（DR-8/DR-9）。
+  3. 全程唯讀，仍不寫入任何東西（DR-8/DR-9）；
+  4. （私）判定寧枉勿縱：整條路徑（含檔名）任何位置出現標記即視為私。
 """
 
 from __future__ import annotations
@@ -51,6 +54,15 @@ class DriveReadError(Exception):
     """read_file 無法取得內容（範圍外、不存在、型別不支援）。訊息可直接回給 LLM。"""
 
 
+# （私）標記：資料夾（或檔名）含此字樣者，內容僅供 LLM 判斷、不得寫給使用者（DR-4 修訂）
+_PRIVATE_MARKERS = ("（私）", "(私)")
+
+
+def is_private_path(path: str) -> bool:
+    """路徑任一位置含（私）標記（全形或半形括號）即視為私——寧枉勿縱。"""
+    return any(marker in path for marker in _PRIVATE_MARKERS)
+
+
 @dataclass(frozen=True, slots=True)
 class DriveFile:
     """搜尋結果——只有 metadata（DR-4）；file_id 供後續 read_file 讀內容用。"""
@@ -64,11 +76,15 @@ class DriveFile:
 
 @dataclass(frozen=True, slots=True)
 class DriveContent:
-    """read_file 的結果：檔案 metadata ＋ 取出的純文字內容。"""
+    """read_file 的結果：檔案 metadata ＋ 取出的純文字內容。
+
+    private：路徑含（私）標記——內容僅供 LLM 判斷相關性，不得寫給使用者（DR-4 修訂）。
+    """
 
     file: DriveFile
     text: str
     truncated: bool = False
+    private: bool = False
 
 
 def content_mode(mime: str | None) -> tuple[str, str | None] | None:
@@ -243,7 +259,9 @@ class DriveSearchService:
 
         text = await self._gateway.fetch_text(file_id, mode[1])
         truncated = len(text) > CONTENT_LIMIT
-        return DriveContent(file=meta, text=text[:CONTENT_LIMIT], truncated=truncated)
+        return DriveContent(
+            file=meta, text=text[:CONTENT_LIMIT], truncated=truncated, private=is_private_path(meta.path)
+        )
 
 
 # --------------------------------------------------------------------------- #
