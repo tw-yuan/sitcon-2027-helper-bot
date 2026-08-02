@@ -43,6 +43,7 @@ sitcon-bot/
 ├── README.md                    # 部署與前置作業步驟（T14）
 ├── config/
 │   ├── team_charter.md          # 職掌文件（客戶後補；缺檔時系統仍須可跑，見 RO-8）
+│   ├── knowledge.md             # 背景知識（會議室代碼等內部常識；缺檔仍可運作，/reload 重載）
 │   └── templates/
 │       ├── meeting_summit.md    # 大籌／站立會議模板
 │       └── meeting_team.md      # 組會模板
