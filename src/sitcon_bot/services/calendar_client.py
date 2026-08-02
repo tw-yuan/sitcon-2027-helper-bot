@@ -253,6 +253,14 @@ class GoogleCalendarGateway:
             return req.execute(http=request_http(self._creds), num_retries=GOOGLE_NUM_RETRIES)
         except Exception as exc:  # RefreshError（DWD 未授權）等轉為可讀訊息
             text = str(exc)
+            if "usageLimits" in text or "usage limits" in text.lower():
+                # 實測（2026-08-03）：只有「邀請網域外對象」會踩到；不帶邀請或邀網域內都正常。
+                # Google 對外部邀請有反濫用限流（尤其 API／自動化發出的），通常 24 小時內重置。
+                raise CalendarError(
+                    "Google 暫時限制了「邀請網域外對象」的用量（反濫用限流，通常 24 小時內重置）。"
+                    "替代做法：改為**不帶邀請對象**重新建立——活動仍會出現在共用日曆上，訂閱的人都看得到；"
+                    "或明天再帶邀請對象重試。請把這個狀況與替代做法告訴使用者，由使用者決定。"
+                ) from exc
             if "unauthorized_client" in text or "invalid_grant" in text:
                 raise CalendarError(
                     f"DWD 冒用 {self._subject} 失敗：Workspace 後台尚未對此 service account "
