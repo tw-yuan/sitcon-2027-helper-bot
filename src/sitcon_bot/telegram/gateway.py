@@ -84,6 +84,7 @@ class BusinessResult:
     detail: dict[str, Any] | None = None
     pending: Any = None  # 若以 ask_user 收尾，帶回待答狀態供以問句 message_id 保存
     media: list[Any] = field(default_factory=list)  # 隨回覆送出的圖片（MediaItem：url/caption）
+    reaction: str | None = None  # agent 要求對觸發訊息按的 emoji（react_heart ❤），取代完成時的 ✅
 
 
 # 業務處理器：吃 BusinessRequest 回傳 BusinessResult。
@@ -282,7 +283,10 @@ class Gateway:
         if result.status == "ok":
             if result.media:  # 代表縮圖（photo_search）→ 以圖片送出
                 await self._send_media(message, result.media)
-            await self._react(message, REACT_DONE)  # 完成 → ✅（clarify/error 維持 👀）
+            # 完成 → ✅；agent 有按愛心（react_heart）則以 ❤ 取代（bot 一則訊息只能掛一個 reaction）
+            await self._react(message, result.reaction or REACT_DONE)
+        elif result.reaction:  # clarify 也保留愛心（維持 👀 只在未按愛心時）
+            await self._react(message, result.reaction)
         # 反問待答狀態以「問句 message_id」為鍵保存；使用者回覆該問句時才續接
         if result.pending is not None and reply_mid is not None:
             self._pending.put(message.chat.id, reply_mid, result.pending)

@@ -27,6 +27,7 @@ class ToolContext:
     """單次觸發互動的執行脈絡（觸發者資訊，供 attribution 與稽核）。
 
     media：工具（如 photo_search）可塞入要隨回覆送出的圖片，處理完由 gateway 取出送出。
+    reaction：工具（react_heart）可設定要對觸發訊息按的 emoji，回覆送出時取代預設的 ✅。
     """
 
     chat_id: int
@@ -35,6 +36,7 @@ class ToolContext:
     username: str | None
     text: str
     media: list[MediaItem] = field(default_factory=list)
+    reaction: str | None = None
 
 
 def _strip_titles(schema: dict[str, Any]) -> dict[str, Any]:

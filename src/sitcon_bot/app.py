@@ -23,6 +23,7 @@ from .agent.tools.gitlab_tools import build_gitlab_tools
 from .agent.tools.hackmd_tools import build_hackmd_tools
 from .agent.tools.people_tools import build_people_tools
 from .agent.tools.photo_tools import build_photo_tools
+from .agent.tools.reaction_tools import build_reaction_tools
 from .auth.groups import GroupStore
 from .domain.templates import load_template_store
 from .notify.cards import collect_due_cards
@@ -153,6 +154,7 @@ async def run(settings: Settings) -> None:
             *build_people_tools(roster),
             *build_drive_tools(drive),
             *build_photo_tools(photos),
+            *build_reaction_tools(),
             *build_hackmd_tools(
                 hackmd,
                 templates,
@@ -263,6 +265,7 @@ async def run(settings: Settings) -> None:
             detail=result.detail,
             pending=result.pending,
             media=result.media,
+            reaction=result.reaction,
         )
 
     gateway = Gateway(settings, groups, audit, commands, business_handler, pending_store=pending_store)

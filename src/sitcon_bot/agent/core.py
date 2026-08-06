@@ -81,6 +81,8 @@ class AgentResult:
     pending: Pending | None = None
     # 工具（如 photo_search）要求隨回覆送出的圖片（MediaItem）
     media: list[Any] = field(default_factory=list)
+    # 工具（react_heart）要求對觸發訊息按的 emoji；gateway 以它取代完成時的 ✅
+    reaction: str | None = None
 
 
 @dataclass(slots=True)
@@ -145,11 +147,15 @@ class Agent:
         detail = {"tools": outcome.tool_actions} if outcome.tool_actions else None
         if outcome.pending is not None:
             return AgentResult(
-                reply=outcome.reply, status="clarify", action="clarify", detail=detail, pending=outcome.pending
+                reply=outcome.reply, status="clarify", action="clarify", detail=detail,
+                pending=outcome.pending, reaction=ctx.reaction,
             )
 
         action = outcome.tool_actions[-1] if outcome.tool_actions else "chat"
-        return AgentResult(reply=outcome.reply, status="ok", action=action, detail=detail, media=list(ctx.media))
+        return AgentResult(
+            reply=outcome.reply, status="ok", action=action, detail=detail,
+            media=list(ctx.media), reaction=ctx.reaction,
+        )
 
     async def _requester_note(self, ctx: ToolContext) -> str:
         """把「當前發話者」的名冊身分注入本則訊息，讓「我／幫我／指派給我」可自動解析（RO-5）。
