@@ -1,19 +1,17 @@
-"""NT-11：過期卡片收集與 assignee → Telegram tag 對應鏈。"""
+"""NT-11：開著卡片收集與 assignee → Telegram tag 對應鏈。"""
 
 from __future__ import annotations
 
 from datetime import date
 
-from sitcon_bot.notify.cards import collect_overdue_cards, mention_html
+from sitcon_bot.notify.cards import collect_open_cards, mention_html
 from sitcon_bot.services.gitlab_client import Assignee, Issue
 from sitcon_bot.services.sheets_roster import Member, Roster
-
-CUTOFF = date(2026, 7, 31)
 
 
 def _issue(
     iid: int,
-    due: str,
+    due: str | None,
     assignees: list[Assignee] | None = None,
     title: str = "卡",
     labels: list[str] | None = None,
@@ -34,12 +32,12 @@ class _FakeGitLab:
     def __init__(self, issues: list[Issue], fail: bool = False) -> None:
         self._issues = issues
         self._fail = fail
-        self.cutoffs: list[date] = []
+        self.calls = 0
 
-    async def overdue_issues(self, cutoff: date) -> list[Issue]:
+    async def open_cards(self) -> list[Issue]:
         if self._fail:
             raise RuntimeError("gitlab down")
-        self.cutoffs.append(cutoff)
+        self.calls += 1
         return self._issues
 
 
@@ -104,8 +102,8 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
             Member(gitlab_id=2, telegram_id=55, nickname="鮑伯"),
         ]
     )
-    cards = await collect_overdue_cards(gitlab, roster, CUTOFF)
-    assert gitlab.cutoffs == [CUTOFF]
+    cards = await collect_open_cards(gitlab, roster)
+    assert gitlab.calls == 1
     (card,) = cards
     assert card.iid == 117 and card.title == "贊助簡報"
     assert card.team == "行政組"
@@ -114,24 +112,32 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
     assert card.mentions == ("@alice", '<a href="tg://user?id=55">鮑伯</a>')
 
 
+async def test_collect_card_without_due_date_has_none() -> None:
+    """2026-08-06 修訂：未填到期日的開著卡也要列入（due=None）。"""
+    gitlab = _FakeGitLab([_issue(94, None, title="申請摩茲工寮臨時 keyholder", labels=["Status::Waiting"])])
+    (card,) = await collect_open_cards(gitlab, None)
+    assert card.due is None
+    assert card.iid == 94
+
+
 async def test_collect_without_team_label_has_empty_team() -> None:
     gitlab = _FakeGitLab([_issue(1, "2026-07-30", labels=["Status::Inbox"])])
-    (card,) = await collect_overdue_cards(gitlab, None, CUTOFF)
+    (card,) = await collect_open_cards(gitlab, None)
     assert card.team == ""
 
 
 async def test_collect_without_roster_marks_all_unmapped() -> None:
     gitlab = _FakeGitLab([_issue(1, "2026-07-30", [Assignee(id=9, name="某人")])])
-    (card,) = await collect_overdue_cards(gitlab, None, CUTOFF)
+    (card,) = await collect_open_cards(gitlab, None)
     assert card.mentions == ("某人（無 TG 對應）",)
 
 
 async def test_collect_degrades_when_roster_unavailable() -> None:
     """名冊掛掉不擋卡片提醒，只是 tag 退化為「無 TG 對應」。"""
     gitlab = _FakeGitLab([_issue(1, "2026-07-30", [Assignee(id=9, username="u9")])])
-    (card,) = await collect_overdue_cards(gitlab, _FakeRoster(fail=True), CUTOFF)
+    (card,) = await collect_open_cards(gitlab, _FakeRoster(fail=True))
     assert card.mentions == ("u9（無 TG 對應）",)
 
 
 async def test_collect_empty_issue_list_skips_roster() -> None:
-    assert await collect_overdue_cards(_FakeGitLab([]), _FakeRoster(fail=True), CUTOFF) == []
+    assert await collect_open_cards(_FakeGitLab([]), _FakeRoster(fail=True)) == []

@@ -29,6 +29,8 @@ SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 
 # 表頭 → 欄位。來源為繁中表頭；找不到就當該欄不存在（該欄一律為空）。
 COL_NAME = "事件名稱"
+# 2026-08-06 發現來源表頭把「事件名稱」改成了「項目」；兩種寫法都接受（NT-1 修訂）。
+COL_NAME_ALIASES = ("項目",)
 COL_START = "開始時間"
 COL_END = "結束時間"
 COL_TEAM = "主導組別"
@@ -97,6 +99,8 @@ class MilestoneHit:
 
 def parse_milestones(header: list[str], rows: list[list[str]]) -> list[Milestone]:
     """把原始表格解析為 Milestone 清單；無事件名稱或無任何日期的列一律略過。"""
+    if COL_NAME not in header:
+        header = [COL_NAME if h in COL_NAME_ALIASES else h for h in header]
     idx = {name: header.index(name) for name in (COL_NAME, COL_START, COL_END, COL_TEAM, COL_NOTE) if name in header}
 
     def cell(row: list[str], name: str) -> str:
@@ -255,6 +259,9 @@ class MilestoneScheduleService:
             raise MilestoneScheduleUnavailableError("時程表載入失敗且無可用快取") from exc
         self._cache = MilestoneSchedule(parse_milestones(header, rows))
         self._at = self._clock()
+        if rows and not len(self._cache):
+            # 有資料卻一筆都解析不出來，幾乎都是表頭又被改名（2026-08-06 就發生過一次）。
+            log.warning("時程表有 %d 列但解析出 0 筆里程碑，表頭可能改名了：%r", len(rows), header)
         log.info("時程表載入 %d 筆里程碑", len(self._cache))
         return self._cache
 

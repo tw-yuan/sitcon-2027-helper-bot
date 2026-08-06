@@ -25,7 +25,7 @@ from .agent.tools.people_tools import build_people_tools
 from .agent.tools.photo_tools import build_photo_tools
 from .auth.groups import GroupStore
 from .domain.templates import load_template_store
-from .notify.cards import collect_overdue_cards
+from .notify.cards import collect_open_cards
 from .notify.scheduler import MilestoneNotifier
 from .notify.subscriptions import NotifyStateStore, SubscriptionStore
 from .services.calendar_client import build_calendar_service
@@ -228,7 +228,7 @@ async def run(settings: Settings) -> None:
             subscriptions=SubscriptionStore(db),
             state=NotifyStateStore(db),
             sender=send_push,
-            cards=partial(collect_overdue_cards, gitlab, roster),  # NT-11 過期卡片提醒
+            cards=partial(collect_open_cards, gitlab, roster),  # NT-11 開著卡片提醒
             tz=settings.tz,
             hour=settings.milestone_notify_hour,
             minute=settings.milestone_notify_minute,

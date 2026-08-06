@@ -1,7 +1,8 @@
 """每日里程碑預告排程（NT-6～NT-8、NT-11）。
 
 固定於 Asia/Taipei 每天 `MILESTONE_NOTIFY_HOUR:MINUTE`（預設 23:00）送出**隔天**的里程碑，
-並附上**送出當天**仍未關閉的過期 GitLab 卡片提醒（NT-11；卡片不分組別，所有訂閱群都收到）。
+並附上所有開著的 GitLab 卡片提醒（NT-11，2026-08-06 修訂：GL-22 開著即列，不限已過期；
+卡片不分組別，所有訂閱群都收到）。
 
 設計取捨：
   - 不引入 APScheduler／外部排程（AGENTS 9.9 只允許單機）。以 60 秒 tick 輪詢判斷是否到點，
@@ -37,8 +38,8 @@ log = logging.getLogger(__name__)
 # 送出一則預告 (chat_id, thread_id, html)：回傳是否成功（失敗不應中斷其餘群組）。
 Sender = Callable[[int, int | None, str], Awaitable[bool]]
 
-# 取得以某日為基準（due ≤ 該日）的過期卡片清單；失敗往外拋，由排程端決定降級。
-CardsProvider = Callable[[date], Awaitable[list[CardReminder]]]
+# 取得所有開著的卡片清單（GL-22）；失敗往外拋，由排程端決定降級。
+CardsProvider = Callable[[], Awaitable[list[CardReminder]]]
 
 TICK_SECONDS = 60.0
 
@@ -128,26 +129,26 @@ class MilestoneNotifier:
     # ------------------------------------------------------------------ #
     # 派送與預覽
     # ------------------------------------------------------------------ #
-    async def _cards_for(self, target: date) -> list[CardReminder]:
-        """以送出當天（target 前一日）為基準的過期卡片；取不到時降級為只送里程碑段。"""
+    async def _open_cards(self) -> list[CardReminder]:
+        """所有開著的卡片；取不到時降級為只送里程碑段。"""
         if self._cards is None:
             return []
         try:
-            return await self._cards(target - timedelta(days=1))
+            return await self._cards()
         except Exception:
-            log.warning("過期卡片取得失敗，本次僅送里程碑段", exc_info=True)
+            log.warning("開著卡片取得失敗，本次僅送里程碑段", exc_info=True)
             return []
 
     async def dispatch(self, target: date) -> int:
         """把 target 日的預告送給所有訂閱群組；回傳成功送出的群組數。"""
         schedule = await self._schedule.get()
         hits = schedule.for_date(target)
-        cards = await self._cards_for(target)
+        cards = await self._open_cards()
         sent = 0
         for sub in await self._subs.list_all():
             selected = select_for_teams(hits, sub.teams, self._always)
             if not selected and not cards and not self._send_when_empty:
-                continue  # 沒有該群關心的事項、也沒有過期卡片，就不吵人
+                continue  # 沒有該群關心的事項、也沒有開著卡片，就不吵人
             try:
                 ok = await self._sender(sub.chat_id, sub.thread_id, render_digest(target, selected, cards=cards))
             except Exception:
@@ -162,5 +163,5 @@ class MilestoneNotifier:
         schedule = await self._schedule.get()
         hits = schedule.for_date(target)
         teams = sub.teams if sub is not None else ()
-        cards = await self._cards_for(target)
+        cards = await self._open_cards()
         return render_digest(target, select_for_teams(hits, teams, self._always), cards=cards, when_label=when_label)

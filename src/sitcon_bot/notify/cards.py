@@ -1,4 +1,5 @@
-"""過期卡片提醒（NT-11）——收集開著（GL-22：不含 Status::Review）且已到期的 GitLab 卡片，
+"""開著卡片提醒（NT-11，2026-08-06 修訂）——收集所有「開著」（GL-22：opened 且無 Status::Review）
+的 GitLab 卡片（To Do／Inbox／Waiting／Doing…都算，不限已過期），
 並把 assignee 換成 Telegram tag、從 Team:: label 取出組名供 digest 分組。
 
 tag 對應鏈（roster 以 gitlab_id 對應）：
@@ -25,13 +26,13 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class CardReminder:
-    """digest 可直接排版的一張過期卡；mentions 為 HTML-ready 片段（空＝未指派）。"""
+    """digest 可直接排版的一張開著卡；mentions 為 HTML-ready 片段（空＝未指派）。"""
 
     iid: int
     url: str  # 可能為空字串（API 未回 web_url 時 digest 退化為純文字 #iid）
     title: str
     team: str  # Team:: label 去前綴後的組名；空字串＝卡片沒掛組別（digest 歸入「未分組」）
-    due: date
+    due: date | None  # None＝未填到期日（digest 標示「未填到期日」並殿後）
     mentions: tuple[str, ...]
 
 
@@ -49,9 +50,9 @@ def mention_html(a: Assignee, member: Member | None) -> str:
     return f"{escape_html(display)}（無 TG 對應）"
 
 
-async def collect_overdue_cards(gitlab: GitLabClient, roster: RosterService | None, cutoff: date) -> list[CardReminder]:
-    """開著（不含 Status::Review）且 due_date ≤ cutoff 的卡片，過期最久在前。"""
-    issues = await gitlab.overdue_issues(cutoff)
+async def collect_open_cards(gitlab: GitLabClient, roster: RosterService | None) -> list[CardReminder]:
+    """所有開著（GL-22）的卡片；有到期日者在前（過期最久優先），未填到期日者殿後。"""
+    issues = await gitlab.open_cards()
     if not issues:
         return []
     by_gitlab_id: dict[int, Member] = {}
@@ -66,7 +67,7 @@ async def collect_overdue_cards(gitlab: GitLabClient, roster: RosterService | No
             url=i.web_url,
             title=i.title,
             team=_team_of(i.labels),
-            due=date.fromisoformat(i.due_date),  # overdue_issues 保證非空
+            due=date.fromisoformat(i.due_date) if i.due_date else None,
             mentions=tuple(mention_html(a, by_gitlab_id.get(a.id)) for a in i.assignees),
         )
         for i in issues

@@ -75,7 +75,7 @@ class Settings(BaseSettings):
 
     # --- 里程碑預告（NT-*）---
     milestone_notify_enabled: bool = True
-    milestone_notify_hour: int = 23  # Asia/Taipei，預告「隔天」的事項＋當日過期卡片提醒
+    milestone_notify_hour: int = 23  # Asia/Taipei，預告「隔天」的事項＋開著卡片提醒
     milestone_notify_minute: int = 0
     # 錯過到點（如剛好在重啟）時的補送視窗；超過就跳過該日，不半夜打擾
     milestone_notify_catchup_minutes: int = 60
@@ -199,7 +199,7 @@ class Settings(BaseSettings):
             f"drive={self.cache_ttl_drive_tree} roster={self.cache_ttl_roster} photos={self.cache_ttl_photos}",
             f"  照片索引       : sheet={self.photo_index_sheet_id[:12]}… tab={self.photo_index_tab}",
             f"  里程碑預告     : {'啟用' if self.milestone_notify_enabled else '停用'}  "
-            f"每天 {self.milestone_notify_hour:02d}:{self.milestone_notify_minute:02d}（隔天里程碑＋過期卡片）  "
+            f"每天 {self.milestone_notify_hour:02d}:{self.milestone_notify_minute:02d}（隔天里程碑＋開著卡片）  "
             f"sheet={self.milestone_sheet_id[:12]}… gid={self.milestone_sheet_gid}  "
             f"必收組別={self.milestone_always_team_list}",
             f"  反問續接       : ttl={self.context_ttl_seconds}s（純 reply-chain：回覆訊息才帶脈絡）",

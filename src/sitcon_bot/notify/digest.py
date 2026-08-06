@@ -5,8 +5,9 @@
 
 兩個段落：
     📅 里程碑——隔天事項，一行一筆 `[組別] 標題`
-    ⚠️ 卡片提醒——開著（不含 Status::Review）且已到期的 GitLab 卡片，附 assignee tag
-      （cards.py 先組好）；依 Team:: 組別分組、組內依到期日排序，沒掛組別的歸「未分組」殿後
+    ⚠️ 卡片提醒——所有開著（GL-22：不含 Status::Review）的 GitLab 卡片，附 assignee tag
+      （cards.py 先組好）；依 Team:: 組別分組、組內依到期日排序（未填到期日殿後），
+      沒掛組別的歸「未分組」殿後
 """
 
 from __future__ import annotations
@@ -20,8 +21,9 @@ from .cards import CardReminder
 
 WEEKDAY_ZH = ("一", "二", "三", "四", "五", "六", "日")
 
-# 卡片段落最多列出的張數；再多就收成一行總數，避免撞 Telegram 4096 字上限。
-CARDS_MAX = 20
+# 卡片段落最多列出的張數；再多就收成一行總數。逾長訊息 gateway 會分段送出（TRIG-8），
+# 這裡的上限只是防止看板爆量時把群組洗版。
+CARDS_MAX = 100
 
 
 def format_date(d: date) -> str:
@@ -44,18 +46,24 @@ def _milestone_section(target: date, hits: list[MilestoneHit], when_label: str) 
 
 def _card_line(card: CardReminder) -> str:
     ref = f'<a href="{card.url}">#{card.iid}</a>' if card.url else f"#{card.iid}"
+    when = f"{_short_date(card.due)} 到期" if card.due else "未填到期日"
     who = f"— {' '.join(card.mentions)}" if card.mentions else "—（未指派）"
-    return f"• {ref} <b>{escape_html(card.title)}</b>（{_short_date(card.due)} 到期）{who}"
+    return f"• {ref} <b>{escape_html(card.title)}</b>（{when}）{who}"
+
+
+def _sort_key(c: CardReminder) -> tuple[bool, date, int]:
+    # 有到期日者在前（過期最久優先），未填到期日者殿後。
+    return (c.due is None, c.due or date.max, c.iid)
 
 
 def _cards_section(cards: Sequence[CardReminder]) -> str:
     # 先以整體到期順序截到上限（保住過期最久的），再分組排版。
-    shown = sorted(cards, key=lambda c: (c.due, c.iid))[:CARDS_MAX]
+    shown = sorted(cards, key=_sort_key)[:CARDS_MAX]
     groups: dict[str, list[CardReminder]] = {}
     for c in shown:
         groups.setdefault(c.team, []).append(c)
-    # 組間依「該組最早到期」排序（最急的組在前），未分組（team 為空）一律殿後。
-    ordered = sorted(groups.items(), key=lambda kv: (kv[0] == "", kv[1][0].due, kv[1][0].iid))
+    # 組間依「該組最急的卡」排序（最急的組在前），未分組（team 為空）一律殿後。
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0] == "", *_sort_key(kv[1][0])))
     lines = ["⚠️ <b>卡片提醒</b>"]
     for team, group in ordered:
         lines += ["", f"<b>【{escape_html(team) or '未分組'}】</b>"]

@@ -19,7 +19,6 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import date
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..domain.matching import nearest_labels, normalize_label
@@ -522,20 +521,13 @@ class GitLabClient:
             issues = [i for i in issues if "Status::Review" not in i.labels]  # GL-22
         return issues
 
-    async def overdue_issues(self, cutoff: date) -> list[Issue]:
-        """NT-11 卡片提醒：開著（GL-22：opened 且無 Status::Review）且 due_date ≤ cutoff 的卡片，過期最久在前。
-
-        以 due_date=any 讓 GitLab 只回有到期日的卡，cutoff 比對在本地做——
-        伺服器端 `due_date=overdue` 以 UTC 判日且不含當日，與台北時區的語意對不上。
+    async def open_cards(self) -> list[Issue]:
+        """NT-11 卡片提醒（2026-08-06 修訂）：所有「開著」的卡片（GL-22：opened 且無 Status::Review），
+        不限已過期。有到期日者在前（過期最久優先），未填到期日者殿後。
         """
-        raw = await self._call(self._b.list_issues, {"state": "opened", "due_date": "any"})
-        limit = cutoff.isoformat()
-        issues = [
-            i
-            for i in (Issue.from_raw(r) for r in raw)
-            if i.due_date and i.due_date <= limit and "Status::Review" not in i.labels  # GL-22
-        ]
-        issues.sort(key=lambda i: (i.due_date or "", i.iid))
+        raw = await self._call(self._b.list_issues, {"state": "opened"})
+        issues = [i for i in (Issue.from_raw(r) for r in raw) if "Status::Review" not in i.labels]  # GL-22
+        issues.sort(key=lambda i: (i.due_date is None, i.due_date or "", i.iid))
         return issues
 
     # -------------------------- 重試與錯誤分類 -------------------------- #

@@ -373,29 +373,27 @@ async def test_open_only_excludes_review_and_closed() -> None:
 
 
 # ------------------------------------------------------------------ #
-# NT-11：過期卡片查詢
+# NT-11：開著卡片查詢（2026-08-06 修訂：不限已過期）
 # ------------------------------------------------------------------ #
 def _bare_issue(iid: int, due: str | None, state: str = "opened", labels: list[str] | None = None) -> dict[str, Any]:
     return {"iid": iid, "web_url": f"u{iid}", "title": f"t{iid}", "description": None,
             "labels": labels or [], "assignees": [], "due_date": due, "state": state}
 
 
-async def test_overdue_issues_filters_and_sorts() -> None:
-    from datetime import date
-
+async def test_open_cards_filters_and_sorts() -> None:
     b = FakeBackend(LABELS)
     b.issues = {
-        1: _bare_issue(1, "2026-08-01"),            # 未到期 → 排除
-        2: _bare_issue(2, "2026-07-31"),            # 當天到期 → 算過期
-        3: _bare_issue(3, "2026-07-25"),            # 過期最久 → 排最前
-        4: _bare_issue(4, "2026-07-28", "closed"),  # 已關閉 → 排除
-        5: _bare_issue(5, None),                    # 無到期日 → 排除
-        6: _bare_issue(6, "2026-07-25"),            # 同日到期 → 以 iid 穩定排序
+        1: _bare_issue(1, "2026-08-01", labels=["Status::To Do"]),   # 未到期也列入
+        2: _bare_issue(2, "2026-07-31", labels=["Status::Doing"]),
+        3: _bare_issue(3, "2026-07-25", labels=["Status::Inbox"]),   # 過期最久 → 排最前
+        4: _bare_issue(4, "2026-07-28", "closed"),                   # 已關閉 → 排除
+        5: _bare_issue(5, None, labels=["Status::Waiting"]),         # 無到期日也列入，殿後
+        6: _bare_issue(6, "2026-07-25"),                             # 同日到期 → 以 iid 穩定排序
         7: _bare_issue(7, "2026-07-20", labels=["Status::Review"]),  # Review 不算開著（GL-22）→ 排除
     }
-    issues = await _client(b).overdue_issues(date(2026, 7, 31))
-    assert [i.iid for i in issues] == [3, 6, 2]
-    assert b.last_filters == {"state": "opened", "due_date": "any"}
+    issues = await _client(b).open_cards()
+    assert [i.iid for i in issues] == [3, 6, 2, 1, 5]
+    assert b.last_filters == {"state": "opened"}
 
 
 # ------------------------------------------------------------------ #

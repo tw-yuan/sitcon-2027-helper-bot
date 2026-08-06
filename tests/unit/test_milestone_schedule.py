@@ -69,6 +69,14 @@ def test_parse_defaults_empty_team() -> None:
     assert ms["開發組零籌"].note.startswith("暫定")
 
 
+def test_parse_accepts_renamed_name_header() -> None:
+    """2026-08-06 來源表頭「事件名稱」被改成「項目」，兩種寫法都要能解析（NT-1 修訂）。"""
+    header = ["項目", *HEADER[1:]]
+    ms = parse_milestones(header, ROWS)
+    assert len(ms) == 5
+    assert ms[0].name == "二籌"
+
+
 def test_teams_listing() -> None:
     assert _schedule().teams() == ["全體", "未分組", "重要日期", "開發組"]
 
