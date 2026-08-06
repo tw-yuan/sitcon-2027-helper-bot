@@ -1,4 +1,4 @@
-"""NT-4／NT-6～NT-11：訂閱儲存、每日排程（到點、去重、補送）、過期卡片、管理指令。"""
+"""NT-4／NT-6～NT-11：訂閱儲存、每日排程（到點、去重、補送）、到期卡片、管理指令。"""
 
 from __future__ import annotations
 
@@ -254,24 +254,23 @@ async def test_dispatch_when_no_subscriptions(db: Database) -> None:
 
 
 # ------------------------------------------------------------------ #
-# NT-11：開著卡片提醒
+# NT-11：到期卡片提醒
 # ------------------------------------------------------------------ #
 def _card(iid: int = 117) -> CardReminder:
     return CardReminder(iid=iid, url="", title=f"卡{iid}", team="行政組", due=date(2026, 9, 10), mentions=("@alice",))
 
 
-async def test_dispatch_appends_open_cards(db: Database) -> None:
+async def test_dispatch_appends_due_cards(db: Database) -> None:
     sender = _Recorder()
     await SubscriptionStore(db).subscribe(CHAT, "群", [], ADMIN)
-    calls = 0
+    targets: list[date] = []
 
-    async def cards() -> list[CardReminder]:
-        nonlocal calls
-        calls += 1
+    async def cards(target: date) -> list[CardReminder]:
+        targets.append(target)
         return [_card()]
 
     assert await _notifier(db, sender, cards=cards).tick(_at(2026, 9, 11, 20, 0)) == 1
-    assert calls == 1  # 整輪只抓一次
+    assert targets == [date(2026, 9, 12)]  # 整輪只抓一次，且以預告目標日（隔天）為視窗錨點
     text = sender.sent[0][2]
     assert "卡片提醒" in text and "#117" in text and "@alice" in text
     assert "二籌" in text  # 里程碑段照舊
@@ -283,7 +282,7 @@ async def test_cards_fetched_once_for_all_groups(db: Database) -> None:
     await subs.subscribe(-2, "群二", [], ADMIN)
     calls = 0
 
-    async def cards() -> list[CardReminder]:
+    async def cards(target: date) -> list[CardReminder]:
         nonlocal calls
         calls += 1
         return [_card()]
@@ -295,11 +294,11 @@ async def test_cards_fetched_once_for_all_groups(db: Database) -> None:
 
 
 async def test_group_without_milestones_still_gets_cards(db: Database) -> None:
-    """只訂開發組的群在只有財務事項的日子，仍會收到開著卡片（訊息只有卡片段）。"""
+    """只訂開發組的群在只有財務事項的日子，仍會收到到期卡片（訊息只有卡片段）。"""
     sender = _Recorder()
     await SubscriptionStore(db).subscribe(-2, "開發群", ["開發組"], ADMIN)
 
-    async def cards() -> list[CardReminder]:
+    async def cards(target: date) -> list[CardReminder]:
         return [_card()]
 
     assert await _notifier(db, sender, cards=cards).tick(_at(2026, 12, 16, 20, 0)) == 1
@@ -311,7 +310,7 @@ async def test_no_cards_and_no_milestones_stays_silent(db: Database) -> None:
     sender = _Recorder()
     await SubscriptionStore(db).subscribe(CHAT, "群", [], ADMIN)
 
-    async def cards() -> list[CardReminder]:
+    async def cards(target: date) -> list[CardReminder]:
         return []
 
     assert await _notifier(db, sender, cards=cards).tick(_at(2026, 9, 20, 20, 0)) == 0
@@ -324,7 +323,7 @@ async def test_cards_failure_degrades_to_milestones_only(db: Database) -> None:
     sender = _Recorder()
     await SubscriptionStore(db).subscribe(CHAT, "群", [], ADMIN)
 
-    async def boom() -> list[CardReminder]:
+    async def boom(target: date) -> list[CardReminder]:
         raise RuntimeError("gitlab down")
 
     assert await _notifier(db, sender, cards=boom).tick(_at(2026, 9, 11, 20, 0)) == 1
@@ -334,7 +333,7 @@ async def test_cards_failure_degrades_to_milestones_only(db: Database) -> None:
 
 
 async def test_render_for_preview_includes_cards(db: Database) -> None:
-    async def cards() -> list[CardReminder]:
+    async def cards(target: date) -> list[CardReminder]:
         return [_card()]
 
     out = await _notifier(db, _Recorder(), cards=cards).render_for(None, date(2026, 9, 12))

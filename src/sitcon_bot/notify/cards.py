@@ -1,5 +1,6 @@
-"""開著卡片提醒（NT-11，2026-08-06 修訂）——收集所有「開著」（GL-22：opened 且無 Status::Review）
-的 GitLab 卡片（To Do／Inbox／Waiting／Doing…都算，不限已過期），
+"""到期卡片提醒（NT-11，2026-08-06 二次修訂）——收集「開著」（GL-22：opened 且無 Status::Review）
+且到期日臨近的 GitLab 卡片：以預告目標日 target（＝隔天）為準，列出 due ∈ [target−2, target]
+（隔天到期、當天到期、過期一天內）；過期超過一天、未填到期日者皆不提醒。
 並把 assignee 換成 Telegram tag、從 Team:: label 取出組名供 digest 分組。
 
 tag 對應鏈（roster 以 gitlab_id 對應）：
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from ..services.gitlab_client import Assignee, GitLabClient
 from ..services.sheets_roster import Member, RosterService
@@ -26,13 +27,13 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class CardReminder:
-    """digest 可直接排版的一張開著卡；mentions 為 HTML-ready 片段（空＝未指派）。"""
+    """digest 可直接排版的一張到期卡；mentions 為 HTML-ready 片段（空＝未指派）。"""
 
     iid: int
     url: str  # 可能為空字串（API 未回 web_url 時 digest 退化為純文字 #iid）
     title: str
     team: str  # Team:: label 去前綴後的組名；空字串＝卡片沒掛組別（digest 歸入「未分組」）
-    due: date | None  # None＝未填到期日（digest 標示「未填到期日」並殿後）
+    due: date  # 必有到期日——未填到期日的卡在收集階段就被排除（NT-11 二次修訂）
     mentions: tuple[str, ...]
 
 
@@ -50,10 +51,15 @@ def mention_html(a: Assignee, member: Member | None) -> str:
     return f"{escape_html(display)}（無 TG 對應）"
 
 
-async def collect_open_cards(gitlab: GitLabClient, roster: RosterService | None) -> list[CardReminder]:
-    """所有開著（GL-22）的卡片；有到期日者在前（過期最久優先），未填到期日者殿後。"""
-    issues = await gitlab.open_cards()
-    if not issues:
+async def collect_due_cards(gitlab: GitLabClient, roster: RosterService | None, target: date) -> list[CardReminder]:
+    """開著（GL-22）且 due ∈ [target−2, target] 的卡片（target＝預告目標日，即隔天）：
+    隔天到期、當天到期、過期一天內；過期超過一天與未填到期日不列。過期最久在前。"""
+    dated = [
+        (i, due)
+        for i in await gitlab.open_cards()
+        if i.due_date and target - timedelta(days=2) <= (due := date.fromisoformat(i.due_date)) <= target
+    ]
+    if not dated:
         return []
     by_gitlab_id: dict[int, Member] = {}
     if roster is not None:
@@ -67,8 +73,8 @@ async def collect_open_cards(gitlab: GitLabClient, roster: RosterService | None)
             url=i.web_url,
             title=i.title,
             team=_team_of(i.labels),
-            due=date.fromisoformat(i.due_date) if i.due_date else None,
+            due=due,
             mentions=tuple(mention_html(a, by_gitlab_id.get(a.id)) for a in i.assignees),
         )
-        for i in issues
+        for i, due in dated
     ]

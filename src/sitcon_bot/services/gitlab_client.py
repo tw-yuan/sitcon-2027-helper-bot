@@ -522,8 +522,8 @@ class GitLabClient:
         return issues
 
     async def open_cards(self) -> list[Issue]:
-        """NT-11 卡片提醒（2026-08-06 修訂）：所有「開著」的卡片（GL-22：opened 且無 Status::Review），
-        不限已過期。有到期日者在前（過期最久優先），未填到期日者殿後。
+        """所有「開著」的卡片（GL-22：opened 且無 Status::Review），依到期日排序（未填者殿後）。
+        NT-11 卡片提醒的到期視窗篩選在 notify/cards.py（本方法維持通用的「全部開著」語意）。
         """
         raw = await self._call(self._b.list_issues, {"state": "opened"})
         issues = [i for i in (Issue.from_raw(r) for r in raw) if "Status::Review" not in i.labels]  # GL-22

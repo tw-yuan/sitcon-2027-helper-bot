@@ -1,12 +1,15 @@
-"""NT-11：開著卡片收集與 assignee → Telegram tag 對應鏈。"""
+"""NT-11：到期卡片收集（視窗篩選）與 assignee → Telegram tag 對應鏈。"""
 
 from __future__ import annotations
 
 from datetime import date
 
-from sitcon_bot.notify.cards import collect_open_cards, mention_html
+from sitcon_bot.notify.cards import collect_due_cards, mention_html
 from sitcon_bot.services.gitlab_client import Assignee, Issue
 from sitcon_bot.services.sheets_roster import Member, Roster
+
+# 預告目標日（隔天）；提醒視窗為 [TARGET−2, TARGET]（隔天／當天到期、過期一天內）。
+TARGET = date(2026, 7, 26)
 
 
 def _issue(
@@ -102,7 +105,7 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
             Member(gitlab_id=2, telegram_id=55, nickname="鮑伯"),
         ]
     )
-    cards = await collect_open_cards(gitlab, roster)
+    cards = await collect_due_cards(gitlab, roster, TARGET)
     assert gitlab.calls == 1
     (card,) = cards
     assert card.iid == 117 and card.title == "贊助簡報"
@@ -112,32 +115,51 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
     assert card.mentions == ("@alice", '<a href="tg://user?id=55">鮑伯</a>')
 
 
-async def test_collect_card_without_due_date_has_none() -> None:
-    """2026-08-06 修訂：未填到期日的開著卡也要列入（due=None）。"""
+async def test_collect_keeps_only_due_window() -> None:
+    """2026-08-06 二次修訂：只留隔天到期、當天到期、過期一天內；再早再晚都不提醒。"""
+    gitlab = _FakeGitLab(
+        [
+            _issue(1, "2026-07-23"),  # 過期兩天 → 不列
+            _issue(2, "2026-07-24"),  # 過期一天 → 列
+            _issue(3, "2026-07-25"),  # 當天到期 → 列
+            _issue(4, "2026-07-26"),  # 隔天到期 → 列
+            _issue(5, "2026-07-27"),  # 後天才到期 → 不列
+        ]
+    )
+    cards = await collect_due_cards(gitlab, None, TARGET)
+    assert [c.iid for c in cards] == [2, 3, 4]
+
+
+async def test_collect_card_without_due_date_is_excluded() -> None:
+    """2026-08-06 二次修訂：未填到期日的卡不提醒。"""
     gitlab = _FakeGitLab([_issue(94, None, title="申請摩茲工寮臨時 keyholder", labels=["Status::Waiting"])])
-    (card,) = await collect_open_cards(gitlab, None)
-    assert card.due is None
-    assert card.iid == 94
+    assert await collect_due_cards(gitlab, None, TARGET) == []
 
 
 async def test_collect_without_team_label_has_empty_team() -> None:
-    gitlab = _FakeGitLab([_issue(1, "2026-07-30", labels=["Status::Inbox"])])
-    (card,) = await collect_open_cards(gitlab, None)
+    gitlab = _FakeGitLab([_issue(1, "2026-07-25", labels=["Status::Inbox"])])
+    (card,) = await collect_due_cards(gitlab, None, TARGET)
     assert card.team == ""
 
 
 async def test_collect_without_roster_marks_all_unmapped() -> None:
-    gitlab = _FakeGitLab([_issue(1, "2026-07-30", [Assignee(id=9, name="某人")])])
-    (card,) = await collect_open_cards(gitlab, None)
+    gitlab = _FakeGitLab([_issue(1, "2026-07-25", [Assignee(id=9, name="某人")])])
+    (card,) = await collect_due_cards(gitlab, None, TARGET)
     assert card.mentions == ("某人（無 TG 對應）",)
 
 
 async def test_collect_degrades_when_roster_unavailable() -> None:
     """名冊掛掉不擋卡片提醒，只是 tag 退化為「無 TG 對應」。"""
-    gitlab = _FakeGitLab([_issue(1, "2026-07-30", [Assignee(id=9, username="u9")])])
-    (card,) = await collect_open_cards(gitlab, _FakeRoster(fail=True))
+    gitlab = _FakeGitLab([_issue(1, "2026-07-25", [Assignee(id=9, username="u9")])])
+    (card,) = await collect_due_cards(gitlab, _FakeRoster(fail=True), TARGET)
     assert card.mentions == ("u9（無 TG 對應）",)
 
 
 async def test_collect_empty_issue_list_skips_roster() -> None:
-    assert await collect_open_cards(_FakeGitLab([]), _FakeRoster(fail=True)) == []
+    assert await collect_due_cards(_FakeGitLab([]), _FakeRoster(fail=True), TARGET) == []
+
+
+async def test_collect_all_out_of_window_skips_roster() -> None:
+    """全數落在視窗外時視同無卡，不去打名冊。"""
+    gitlab = _FakeGitLab([_issue(1, "2026-07-01"), _issue(2, None)])
+    assert await collect_due_cards(gitlab, _FakeRoster(fail=True), TARGET) == []

@@ -5,8 +5,8 @@
 
 兩個段落：
     📅 里程碑——隔天事項，一行一筆 `[組別] 標題`
-    ⚠️ 卡片提醒——所有開著（GL-22：不含 Status::Review）的 GitLab 卡片，附 assignee tag
-      （cards.py 先組好）；依 Team:: 組別分組、組內依到期日排序（未填到期日殿後），
+    ⚠️ 卡片提醒——到期在即（隔天／當天到期、過期一天內）的開著卡片，附 assignee tag
+      （cards.py 先篩好、組好，必有到期日）；依 Team:: 組別分組、組內依到期日排序，
       沒掛組別的歸「未分組」殿後
 """
 
@@ -46,14 +46,13 @@ def _milestone_section(target: date, hits: list[MilestoneHit], when_label: str) 
 
 def _card_line(card: CardReminder) -> str:
     ref = f'<a href="{card.url}">#{card.iid}</a>' if card.url else f"#{card.iid}"
-    when = f"{_short_date(card.due)} 到期" if card.due else "未填到期日"
     who = f"— {' '.join(card.mentions)}" if card.mentions else "—（未指派）"
-    return f"• {ref} <b>{escape_html(card.title)}</b>（{when}）{who}"
+    return f"• {ref} <b>{escape_html(card.title)}</b>（{_short_date(card.due)} 到期）{who}"
 
 
-def _sort_key(c: CardReminder) -> tuple[bool, date, int]:
-    # 有到期日者在前（過期最久優先），未填到期日者殿後。
-    return (c.due is None, c.due or date.max, c.iid)
+def _sort_key(c: CardReminder) -> tuple[date, int]:
+    # 過期最久優先（收集階段已保證必有到期日）。
+    return (c.due, c.iid)
 
 
 def _cards_section(cards: Sequence[CardReminder]) -> str:

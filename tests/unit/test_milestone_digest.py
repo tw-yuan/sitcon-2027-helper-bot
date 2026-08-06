@@ -24,7 +24,7 @@ def _card(
     iid: int = 117,
     title: str = "贊助簡報初稿",
     team: str = "行政組",
-    due: date | None = date(2026, 7, 25),
+    due: date = date(2026, 7, 25),
     mentions: tuple[str, ...] = ("@alice",),
     url: str = "https://gitlab.com/sitcon-tw/2027/-/issues/117",
 ) -> CardReminder:
@@ -100,30 +100,6 @@ def test_cards_without_milestones_omits_milestone_section() -> None:
     out = render_digest(D, [], cards=[_card()])
     assert "里程碑" not in out
     assert out.startswith("⚠️ <b>卡片提醒</b>")
-
-
-def test_card_without_due_date_is_labeled() -> None:
-    """2026-08-06 修訂：未填到期日的開著卡也列入，標示「未填到期日」。"""
-    out = render_digest(D, [], cards=[_card(due=None)])
-    assert "<b>贊助簡報初稿</b>（未填到期日）— @alice" in out
-
-
-def test_cards_without_due_sorted_after_dated_within_group() -> None:
-    cards = [
-        _card(iid=1, team="行政組", due=None, url=""),
-        _card(iid=2, team="行政組", due=date(2027, 3, 20), url=""),
-    ]
-    out = render_digest(D, [], cards=cards)
-    assert out.index("• #2 ") < out.index("• #1 ")
-
-
-def test_group_with_only_undated_cards_sorts_after_dated_groups() -> None:
-    cards = [
-        _card(iid=1, team="設計組", due=None, url=""),
-        _card(iid=2, team="行政組", due=date(2027, 3, 20), url=""),
-    ]
-    out = render_digest(D, [], cards=cards)
-    assert out.index("【行政組】") < out.index("【設計組】")
 
 
 def test_cards_are_capped_with_summary_line() -> None:
