@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-4-6"
     llm_api_key: SecretStr
     llm_base_url: str = ""
+    # anthropic 專用：true＝以 Authorization: Bearer 送憑證（對應 ANTHROPIC_AUTH_TOKEN 形式，
+    # 供只認 Bearer 的自架 gateway）；false＝官方 x-api-key。
+    llm_auth_bearer: bool = False
     llm_thinking: ThinkingLevel = "high"
     llm_max_tool_iterations: int = 8
     # openai_compat 專用；留空＝不帶。Codex 的 fast mode 即 service_tier="fast"，

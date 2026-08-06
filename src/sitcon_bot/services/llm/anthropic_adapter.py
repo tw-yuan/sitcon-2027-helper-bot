@@ -36,6 +36,7 @@ class AnthropicAdapter(LLMClient):
         base_url: str | None = None,
         client: Any | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        auth_bearer: bool = False,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
@@ -46,7 +47,12 @@ class AnthropicAdapter(LLMClient):
 
             # base_url 支援 Anthropic-compatible gateway（如自架 proxy）；
             # SDK 會在其後接 /v1/messages。None 則走官方 api.anthropic.com。
-            self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
+            # auth_bearer：以 Authorization: Bearer 送出憑證（對應 ANTHROPIC_AUTH_TOKEN），
+            # 供只認 Bearer 的 gateway；False 則走官方的 x-api-key。兩者擇一，不可同時送。
+            if auth_bearer:
+                self._client = AsyncAnthropic(auth_token=api_key, base_url=base_url)
+            else:
+                self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
 
     async def chat(
         self,

@@ -121,6 +121,7 @@ def build_llm_client(settings: Any) -> LLMClient:
             api_key=settings.llm_api_key.get_secret_value(),
             model=settings.llm_model,
             base_url=settings.llm_base_url or None,
+            auth_bearer=bool(getattr(settings, "llm_auth_bearer", False)),
         )
     if provider == "openai_compat":
         from .openai_compat_adapter import OpenAICompatAdapter

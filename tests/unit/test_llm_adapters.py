@@ -200,6 +200,29 @@ def test_anthropic_adapter_default_base_url_when_unset() -> None:
     assert "api.anthropic.com" in str(adapter._client.base_url)
 
 
+def test_anthropic_adapter_bearer_auth() -> None:
+    # auth_bearer=True → SDK 以 Authorization: Bearer 送憑證（ANTHROPIC_AUTH_TOKEN 形式），
+    # 不送 x-api-key（兩者同時送會被 API 拒絕）。
+    adapter = AnthropicAdapter(
+        api_key="tok", model="claude-opus-4-8", base_url="https://llm.rlong.me", auth_bearer=True
+    )
+    assert adapter._client.auth_token == "tok"
+    assert adapter._client.api_key is None
+
+
+def test_factory_anthropic_passes_auth_bearer() -> None:
+    settings = SimpleNamespace(
+        llm_provider="anthropic",
+        llm_api_key=FakeSecret("tok"),
+        llm_model="claude-opus-4-8",
+        llm_base_url="https://llm.rlong.me",
+        llm_auth_bearer=True,
+    )
+    client = build_llm_client(settings)
+    assert isinstance(client, AnthropicAdapter)
+    assert client._client.auth_token == "tok"
+
+
 def test_factory_anthropic_passes_base_url() -> None:
     settings = SimpleNamespace(
         llm_provider="anthropic",
