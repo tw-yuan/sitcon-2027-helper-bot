@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS notify_state (
     value          TEXT,
     updated_at     TEXT                   -- ISO8601（UTC）
 );
+
+-- 群組記憶：各群使用者要求小石記住的事項，注入該群的 system prompt（每群多筆）
+CREATE TABLE IF NOT EXISTS group_memories (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id        INTEGER NOT NULL,      -- Telegram chat id（須為已授權群組）
+    content        TEXT NOT NULL,         -- 記憶內容（純文字）
+    created_by     INTEGER,               -- 設定者 user id
+    created_by_name TEXT,                 -- 設定者 username（顯示用）
+    created_at     TEXT                   -- ISO8601（UTC）
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_chat ON group_memories (chat_id);
 """
 
 Params = Sequence[Any]

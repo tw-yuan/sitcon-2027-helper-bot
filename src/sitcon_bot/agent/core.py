@@ -121,7 +121,7 @@ class Agent:
             username=req.username,
             text=req.text,
         )
-        system = await self._prompt.build()
+        system = await self._prompt.build(chat_id=req.chat_id)
 
         if req.resume is not None:
             # 使用者回覆了 ask_user 問句 → 以待答狀態續接，答案填回原 tool_result

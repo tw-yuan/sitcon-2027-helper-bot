@@ -21,6 +21,7 @@ from ..services.milestone_schedule import (
     norm_team,
 )
 from ..settings import Settings
+from ..storage.memories import GroupMemoryStore
 from .formatting import escape_html
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,12 @@ HELP_TEXT = """<b>小石</b> — SITCON 2027 工作人員助理
 • 小石 開一份 0913 一籌的會議記錄
 • 小石 幫行政組開今天的會議記錄
 • 小石 找上次討論贊助方案的那份文件
+
+<b>群組記憶</b>
+每個群組可以讓小石長期記住偏好、慣例或常用資訊，之後做事時會自動遵守（重啟不遺失）。
+• 小石 記住：這群的卡預設都指派給 Yuan
+• 小石 你目前記得哪些事？
+• 小石 忘掉第 2 條記憶
 
 <b>里程碑預告（管理員設定）</b>
 每天晚上 23:00 自動預告隔天的籌備時程里程碑，並附上到期在即（隔天到期～過期一天內）的 GitLab 卡片提醒（tag assignee）。
@@ -96,11 +103,13 @@ class CommandHandlers:
         groups: GroupStore,
         reload_cb: ReloadCallback | None = None,
         milestones: MilestoneDeps | None = None,
+        memories: GroupMemoryStore | None = None,
     ) -> None:
         self._settings = settings
         self._groups = groups
         self._reload_cb = reload_cb
         self._milestones = milestones
+        self._memories = memories
 
     async def authorize(self, chat_id: int, title: str | None) -> str:
         newly = await self._groups.authorize(chat_id, title, self._settings.telegram_admin_id)
@@ -111,12 +120,20 @@ class CommandHandlers:
 
     async def revoke(self, chat_id: int) -> str:
         existed = await self._groups.revoke(chat_id)
-        # 未授權群組不該再收到任何主動訊息 → 一併清掉里程碑預告訂閱
+        # 未授權群組不該再收到任何主動訊息 → 一併清掉里程碑預告訂閱；群組記憶也一併清空
         unsubscribed = False
         if self._milestones is not None:
             unsubscribed = await self._milestones.subscriptions.unsubscribe(chat_id)
+        cleared = 0
+        if self._memories is not None:
+            cleared = await self._memories.clear(chat_id)
         if existed:
-            tail = "（里程碑預告訂閱也已一併取消）" if unsubscribed else ""
+            tails = []
+            if unsubscribed:
+                tails.append("里程碑預告訂閱")
+            if cleared:
+                tails.append(f"群組記憶 {cleared} 筆")
+            tail = f"（{'、'.join(tails)}也已一併清除）" if tails else ""
             return f"已撤銷此群組的授權，小石在此群組將停止服務。{tail}"
         return "此群組原本就未授權。"
 

@@ -21,6 +21,7 @@ from .agent.tools.calendar_tools import build_calendar_tools
 from .agent.tools.drive_tools import build_drive_tools
 from .agent.tools.gitlab_tools import build_gitlab_tools
 from .agent.tools.hackmd_tools import build_hackmd_tools
+from .agent.tools.memory_tools import build_memory_tools
 from .agent.tools.people_tools import build_people_tools
 from .agent.tools.photo_tools import build_photo_tools
 from .agent.tools.reaction_tools import build_reaction_tools
@@ -40,6 +41,7 @@ from .services.sheets_roster import RosterUnavailableError, build_roster_service
 from .settings import Settings
 from .storage.audit import AuditLog
 from .storage.db import Database
+from .storage.memories import GroupMemoryStore
 from .telegram.commands import CommandHandlers, MilestoneDeps
 from .telegram.gateway import BusinessRequest, BusinessResult, Gateway
 
@@ -65,6 +67,7 @@ async def run(settings: Settings) -> None:
     groups = GroupStore(db)
     await groups.load()
     audit = AuditLog(db)
+    memories = GroupMemoryStore(db)
 
     llm = build_llm_client(settings)
     gitlab = build_gitlab_client(settings)
@@ -155,6 +158,7 @@ async def run(settings: Settings) -> None:
             *build_drive_tools(drive),
             *build_photo_tools(photos),
             *build_reaction_tools(),
+            *build_memory_tools(memories),
             *build_hackmd_tools(
                 hackmd,
                 templates,
@@ -167,7 +171,7 @@ async def run(settings: Settings) -> None:
             *(build_calendar_tools(calendar) if calendar is not None else []),
         ]
     )
-    prompt_builder = PromptBuilder(prompt_provider, tz=settings.tz)
+    prompt_builder = PromptBuilder(prompt_provider, tz=settings.tz, memories_provider=memories.list_for)
     pending_store = PendingStore(settings.context_ttl_seconds)
     agent = Agent(
         llm=llm,
@@ -242,7 +246,7 @@ async def run(settings: Settings) -> None:
             subscriptions=SubscriptionStore(db), schedule=milestones, notifier=notifier
         )
 
-    commands = CommandHandlers(settings, groups, reload_cb=reload_cb, milestones=milestone_deps)
+    commands = CommandHandlers(settings, groups, reload_cb=reload_cb, milestones=milestone_deps, memories=memories)
 
     async def business_handler(req: BusinessRequest) -> BusinessResult:
         result = await agent.handle(

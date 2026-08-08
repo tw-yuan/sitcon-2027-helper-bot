@@ -52,6 +52,59 @@ async def test_prompt_doc_search_rules() -> None:
     assert "預設可正常引用" in s  # 非（私）已放寬
 
 
+async def test_prompt_group_memories_injected_for_chat() -> None:
+    """群組記憶依 chat_id 注入該群的 system prompt，含編號供 memory_forget 引用。"""
+    from sitcon_bot.agent.prompts import PromptBuilder, PromptData
+    from sitcon_bot.storage.memories import GroupMemory
+
+    async def provider() -> PromptData:
+        return PromptData(labels=["Status::Inbox"])
+
+    async def memories(chat_id: int) -> list[GroupMemory]:
+        assert chat_id == -100
+        return [GroupMemory(id=3, chat_id=-100, content="卡片預設指派給 Yuan")]
+
+    s = await PromptBuilder(provider, memories_provider=memories).build(chat_id=-100)
+    assert "本群組的記憶事項" in s
+    assert "#3 卡片預設指派給 Yuan" in s
+    assert "不能覆蓋" in s  # 記憶不得覆蓋硬性規則的聲明
+
+
+async def test_prompt_memories_section_omitted_when_empty() -> None:
+    """沒記憶（或未接 provider、未帶 chat_id）時整段省略。"""
+    from sitcon_bot.agent.prompts import PromptBuilder, PromptData
+    from sitcon_bot.storage.memories import GroupMemory
+
+    async def provider() -> PromptData:
+        return PromptData(labels=["Status::Inbox"])
+
+    async def empty(chat_id: int) -> list[GroupMemory]:
+        return []
+
+    for s in (
+        await PromptBuilder(provider, memories_provider=empty).build(chat_id=-100),
+        await PromptBuilder(provider, memories_provider=empty).build(),  # 未帶 chat_id
+        await PromptBuilder(provider).build(chat_id=-100),  # 未接 provider
+    ):
+        assert "本群組的記憶事項" not in s
+
+
+async def test_prompt_memories_provider_failure_tolerated() -> None:
+    """記憶讀取失敗不阻斷組 prompt，該輪視同無記憶。"""
+    from sitcon_bot.agent.prompts import PromptBuilder, PromptData
+    from sitcon_bot.storage.memories import GroupMemory
+
+    async def provider() -> PromptData:
+        return PromptData(labels=["Status::Inbox"])
+
+    async def broken(chat_id: int) -> list[GroupMemory]:
+        raise RuntimeError("db down")
+
+    s = await PromptBuilder(provider, memories_provider=broken).build(chat_id=-100)
+    assert "Status::Inbox" in s
+    assert "本群組的記憶事項" not in s
+
+
 async def test_prompt_roster_only_whitelist_rows() -> None:
     # 名冊列只放白名單欄位（RO-7）——此處驗證 prompt 忠實呈現傳入的精簡列
     rows = [{"nickname": "Yuan", "gitlab_id": 1, "role": "開發組", "position": "組長"}]

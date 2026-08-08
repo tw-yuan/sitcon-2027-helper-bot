@@ -429,7 +429,7 @@ async def test_revoke_also_drops_subscription(db: Database) -> None:
     )
     await handlers.notify_on(CHAT, "群", ADMIN, "")
     out = await handlers.revoke(CHAT)
-    assert "里程碑預告訂閱也已一併取消" in out
+    assert "里程碑預告訂閱" in out and "一併清除" in out
     assert await SubscriptionStore(db).get(CHAT) is None
 
 
