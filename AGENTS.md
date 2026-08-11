@@ -191,8 +191,8 @@ DB_PATH=/data/sitcon_bot.sqlite3
 | GL-10 label 白名單 | `gitlab_client.py`：寫入前逐一比對；不存在即丟 `LabelNotFound`（附近似候選）→ 工具層轉為 GL-12 回覆 |
 | GL-13 scoped 互斥 | `gitlab_client.py`：組最終 label set 時先移除同 scope 舊值 |
 | GL-16 無 state／delete | `gitlab_client.py` 根本不實作對應方法 |
-| DR-4 回覆只給 metadata | `drive_client.py` 搜尋回傳型別只有 `{name, path, url, mime, file_id}`；內容另走 `read_file`，且 system prompt（`prompts.py` `DOC_SEARCH`）明令不得寫給使用者 |
-| DR-10 讀取範圍／型別 | `drive_client.read_file`：先沿 parents 做範圍檢查（範圍外拒讀），只 export/download 得出文字的型別才讀，內容截斷 8000 字 |
+| DR-4 回覆只給 metadata | `drive_client.py` 搜尋／瀏覽回傳型別僅承載 metadata（`{name, path, url, mime, file_id, modified, target_mime}`）；內容另走讀取工具，且 system prompt（`prompts.py` `DOC_SEARCH`）明令（私）內容不得寫給使用者 |
+| DR-10 讀取範圍／型別 | `drive_client.resolve_for_read`：先沿 parents（含捷徑虛擬根）做範圍檢查（範圍外拒讀）、捷徑解析目標、（私）判定；`drive_content.DriveContentService` 依型別以專屬 API 完整擷取（文件全分頁＋表格、試算表全工作表、簡報備註、表單、Apps Script、PDF、Office、SVG／純文字），圖片影音拒讀；單次 12000 字、offset 續讀 |
 | RO-2 欄位白名單 | `sheets_roster.py` 以表頭白名單擷取，其餘欄位不落地；專屬測試餵完整假資料驗證 |
 | HM-16 無刪除 | `hackmd_client.py` 不實作 delete |
 | 工具參數驗證 | `agent/tools/*`：pydantic schema，驗證失敗依 EC-15 |
@@ -249,8 +249,8 @@ DoD：整合測試（mock GitLab）通過 UC-1～UC-7；golden set 之 GitLab �
 **T9 組別判斷**：`team_classifier.py`（label＋職掌文件＋GL-3 fallback）、RO-8 缺檔容忍。
 DoD：分類測試集（≥15 例，含明確、模糊、無法判斷三類）達成預期；缺 `team_charter.md` 時系統可啟動且 fallback 正常。
 
-**T10 Drive 搜尋／讀取**：資料夾樹索引（範圍兩資料夾、TTL 30 分）、name＋fullText 查詢、路徑組裝、DR-1～DR-11；`drive_read_file` 讀內容供相關性判斷（範圍檢查＋只讀文字型別）。
-DoD：mock 測試：範圍外檔案不出現、搜尋僅 metadata、分頁「更多」、0 筆訊息；read_file 拒讀範圍外與二進位檔、內容帶「不得寫給使用者」註記。
+**T10 Drive 搜尋／讀取**：資料夾樹索引（範圍年度資料夾、TTL 30 分）、name＋fullText 查詢、路徑組裝、DR-1～DR-12；讀取由 `drive_content.py` 依型別完整擷取（2026-08-11 改寫：文件全分頁＋表格、試算表全工作表、簡報備註、表單、Apps Script、PDF、Office；捷徑虛擬根、AND→OR 放寬、`drive_list_folder` 瀏覽）。
+DoD：mock 測試：範圍外檔案不出現、搜尋僅 metadata、分頁「更多」、0 筆訊息、放寬註記、捷徑子樹納入；讀取拒讀範圍外與圖片影音、（私）內容帶「不得寫給使用者」註記、各檔型渲染器與 offset 分段有單元測試。
 
 **T11 HackMD**：client（notes／team folders，端點先照 Swagger 查證）、模板引擎（HM-5 變數）、HM-1～HM-16 全部（含會議文件子資料夾自動補建、兩階段搜尋、編輯回寫）。
 DoD：mock 測試 UC-9～UC-12；子資料夾缺失→自動建立、組別資料夾缺失→root＋提示；必加 tags 不可移除。
@@ -325,7 +325,7 @@ DoD：照 README 在乾淨環境走一遍可完成 SPEC 16.5。
 
 1. 不得呼叫 GitLab 的 label 建立、issue 刪除、state 變更（close/reopen）API；client 層不得存在這些方法。
 2. 不得刪除 HackMD 筆記或資料夾；不得建立「會議文件」以外的任何 HackMD 資料夾。
-3. 不得對 Google Drive 做任何寫入；不得下載、讀取或回傳 Drive 檔案內容（含 export、縮圖、snippet）。
+3. 不得對 Google Drive 做任何寫入（建立／修改／移動／權限）。內容**讀取**自 2026-08-03 起依 DR-10 開放（唯讀、限範圍內、（私）路徑內容不得寫給使用者）；搜尋與資料夾瀏覽結果仍僅 metadata。
 4. 不得讀取名冊指定分頁以外的任何分頁；不得讓 RO-2 白名單以外欄位進入記憶體結構、LLM context、日誌、回覆。
 5. 不得處理私訊功能請求；不得在未授權群組執行任何功能。
 6. 不得將非觸發訊息送往 LLM、寫入儲存或日誌。

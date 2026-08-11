@@ -20,6 +20,7 @@ from sitcon_bot.agent.tools.drive_tools import DriveReadFileArgs, DriveReadFileT
 from sitcon_bot.agent.tools.external_data import neutralize_fence, wrap_external
 from sitcon_bot.agent.tools.gitlab_tools import CreateIssueArgs, GetIssueArgs, GitlabCreateIssueTool, GitlabGetIssueTool
 from sitcon_bot.services.drive_client import DriveFile, DriveReadError, DriveSearchService
+from sitcon_bot.services.drive_content import DriveContentService
 from sitcon_bot.services.gitlab_client import GitLabClient, LabelNotFoundError
 from sitcon_bot.services.sheets_roster import Roster, parse_roster
 from sitcon_bot.telegram.routing import Action, Kind, route
@@ -96,7 +97,9 @@ async def test_b_cannot_create_new_label() -> None:
 # ---- (c) Drive：搜尋結果僅 metadata（DR-4），讀內容受範圍與型別限制（DR-1）----
 def test_c_drive_search_result_has_no_content_field() -> None:
     f = DriveFile(name="合約.pdf", path="SITCON 2027/合約.pdf", url="https://drive/1", mime="application/pdf")
-    assert set(dataclasses.asdict(f).keys()) == {"name", "path", "url", "mime", "file_id"}
+    assert set(dataclasses.asdict(f).keys()) == {
+        "name", "path", "url", "mime", "file_id", "modified", "target_mime",
+    }
     assert not hasattr(f, "content")
     assert not hasattr(f, "snippet")
     assert not hasattr(f, "thumbnail")
@@ -105,7 +108,7 @@ def test_c_drive_search_result_has_no_content_field() -> None:
 _DRIVE_FILES = {
     "in": {"id": "in", "name": "評估.gdoc", "parents": ["f1"], "mimeType": _GDOC, "webViewLink": "u1"},
     "out": {"id": "out", "name": "別人的.gdoc", "parents": ["x1"], "mimeType": _GDOC, "webViewLink": "u2"},
-    "pdf": {"id": "pdf", "name": "合約.pdf", "parents": ["f1"], "mimeType": "application/pdf", "webViewLink": "u3"},
+    "img": {"id": "img", "name": "海報.jpg", "parents": ["f1"], "mimeType": "image/jpeg", "webViewLink": "u3"},
     "priv": {"id": "priv", "name": "薪資.gdoc", "parents": ["p1"], "mimeType": _GDOC, "webViewLink": "u4"},
 }
 _DRIVE_FOLDERS = {
@@ -117,10 +120,7 @@ _DRIVE_FOLDERS = {
 
 
 class _DriveBackend:
-    """兩個 Google 文件（範圍內／範圍外）＋範圍內的 PDF。"""
-
-    def __init__(self) -> None:
-        self.fetched: list[str] = []
+    """兩個 Google 文件（範圍內／範圍外）＋範圍內的圖片檔。"""
 
     async def search_files(self, query: str) -> list[dict]:
         return list(_DRIVE_FILES.values())
@@ -131,36 +131,70 @@ class _DriveBackend:
     async def get_file(self, file_id: str) -> dict | None:
         return _DRIVE_FILES.get(file_id)
 
+    async def list_children(self, folder_id: str) -> list[dict]:
+        return []
+
     async def fetch_text(self, file_id: str, export_mime: str | None) -> str:
-        self.fetched.append(file_id)
-        return "機密內容"
+        return "（export 後援不應被用到）"
 
 
-def _drive_service(backend: _DriveBackend) -> DriveSearchService:
-    return DriveSearchService(backend, {"SITCON 2027": "root"}, ttl_seconds=1800)
+class _DriveContentBackend:
+    """內容擷取閘道假件：記錄實際被抓取內容的檔案（範圍檢查失敗時必須是空的）。"""
+
+    def __init__(self) -> None:
+        self.touched: list[str] = []
+
+    async def get_document(self, file_id: str) -> dict:
+        self.touched.append(file_id)
+        return {"body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "機密內容"}}]}}]}}
+
+    async def download_bytes(self, file_id: str) -> bytes:
+        self.touched.append(file_id)
+        return b"binary"
+
+    # 其餘型別在本測試不應被觸發
+    async def get_spreadsheet(self, file_id: str) -> dict:
+        raise AssertionError("不應讀取試算表")
+
+    async def get_sheet_values(self, file_id: str, a1_range: str) -> list:
+        raise AssertionError("不應讀取試算表值")
+
+    async def get_presentation(self, file_id: str) -> dict:
+        raise AssertionError("不應讀取簡報")
+
+    async def get_form(self, file_id: str) -> dict:
+        raise AssertionError("不應讀取表單")
+
+    async def export_bytes(self, file_id: str, mime: str) -> bytes:
+        raise AssertionError("不應 export")
+
+
+def _drive_services() -> tuple[DriveContentService, _DriveContentBackend]:
+    search = DriveSearchService(_DriveBackend(), {"SITCON 2027": "root"}, ttl_seconds=1800)
+    content_backend = _DriveContentBackend()
+    return DriveContentService(search, content_backend), content_backend
 
 
 async def test_c_drive_read_rejects_out_of_scope_and_binary() -> None:
-    backend = _DriveBackend()
-    service = _drive_service(backend)
+    service, backend = _drive_services()
 
-    assert (await service.read_file("in")).text == "機密內容"  # 範圍內、可轉文字 → 讀得到
+    assert (await service.read("in")).text == "機密內容"  # 範圍內、可轉文字 → 讀得到
 
     with pytest.raises(DriveReadError):  # DR-1：範圍外
-        await service.read_file("out")
-    with pytest.raises(DriveReadError):  # 二進位檔不讀
-        await service.read_file("pdf")
-    assert backend.fetched == ["in"]  # 被拒的兩個檔案完全沒去抓內容
+        await service.read("out")
+    with pytest.raises(DriveReadError):  # 圖片等無文字型別不讀
+        await service.read("img")
+    assert backend.touched == ["in"]  # 被拒的兩個檔案完全沒去抓內容
 
 
 async def test_c_drive_private_path_marked_and_note_enforced() -> None:
     """DR-4（2026-08-03 修訂）：（私）路徑檔案由程式層標示 private，工具結果自帶不得外流註記；
     非（私）檔案標示可引用。私／非私依路徑判定，內文無從偽裝。"""
-    service = _drive_service(_DriveBackend())
+    service, _ = _drive_services()
 
-    private = await service.read_file("priv")
+    private = await service.read("priv")
     assert private.private is True
-    normal = await service.read_file("in")
+    normal = await service.read("in")
     assert normal.private is False
 
     tool = DriveReadFileTool(service)
@@ -172,7 +206,8 @@ async def test_c_drive_private_path_marked_and_note_enforced() -> None:
 
 async def test_c_drive_read_tool_fences_content_as_data() -> None:
     """工具層一律把內容包在資料圍欄內（NFR-6），並依私／非私附上對應註記。"""
-    tool = DriveReadFileTool(_drive_service(_DriveBackend()))
+    service, _ = _drive_services()
+    tool = DriveReadFileTool(service)
     reply = await tool.run(DriveReadFileArgs(file_id="in"), CTX)
     assert "<external_data>" in reply and "機密內容" in reply
     assert "可正常引用" in reply  # 非（私）路徑

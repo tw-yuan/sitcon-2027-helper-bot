@@ -32,6 +32,7 @@ from .notify.scheduler import MilestoneNotifier
 from .notify.subscriptions import NotifyStateStore, SubscriptionStore
 from .services.calendar_client import build_calendar_service
 from .services.drive_client import build_drive_service
+from .services.drive_content import build_drive_content_service
 from .services.gitlab_client import build_gitlab_client
 from .services.hackmd_client import build_hackmd_client
 from .services.llm.base import build_llm_client
@@ -82,6 +83,7 @@ async def run(settings: Settings) -> None:
         settings.drive_scope_map,
         settings.cache_ttl_drive_tree,
     )
+    drive_content = build_drive_content_service(settings.google_sa_json_path, drive)
     photos = build_photo_index_service(
         settings.google_sa_json_path,
         settings.photo_index_sheet_id,
@@ -155,7 +157,7 @@ async def run(settings: Settings) -> None:
         [
             *build_gitlab_tools(gitlab, roster, settings.gitlab_url),
             *build_people_tools(roster),
-            *build_drive_tools(drive),
+            *build_drive_tools(drive, drive_content),
             *build_photo_tools(photos),
             *build_reaction_tools(),
             *build_memory_tools(memories),

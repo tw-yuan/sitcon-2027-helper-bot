@@ -64,12 +64,16 @@ GitLab 卡片、Google 共用雲端硬碟檔案搜尋、HackMD 筆記三大類�
 ### 3. Google（service account，唯讀）
 
 1. 在 Google Cloud Console 建立 **service account**，下載 JSON 金鑰。
-2. 啟用 **Google Drive API** 與 **Google Sheets API**。
+2. 啟用 **Google Drive API**、**Google Sheets API**，以及（完整讀取各檔案類型，DR-10）
+   **Google Docs API**（文件分頁＋表格）、**Google Slides API**（簡報講者備註）、
+   **Google Forms API**（表單題目）。後三者未啟用時功能降級：Docs／Slides 退回 export
+   （會漏其他分頁／備註）、Forms 讀取時回報啟用網址。
 3. 把 service account 的 email **以檢視者（Viewer）共用**給：
-   - 共用雲端硬碟（含「SITCON 2027」「SITCON 2026」兩資料夾）；
+   - 共用雲端硬碟（含「SITCON 2027」「SITCON 2026」「SITCON 2025」年度資料夾）；
    - 名冊 Google Sheet；
    - 籌備時程表 Google Sheet（里程碑預告來源，`MILESTONE_SHEET_ID`）。
-4. 本系統只申請 `drive.readonly` + `spreadsheets.readonly`（最小權限，NFR-4）。
+4. 本系統只申請 `drive.readonly` + `spreadsheets.readonly`（最小權限，NFR-4）；
+   Docs／Slides／Forms 的讀取同樣掛在 `drive.readonly` 之下，不需新增 scope。
 
 > 名冊只讀取 `.env` 指定的**單一分頁**，且只擷取白名單欄位（`nickname`、`gitlab_username`、
 > `gitlab_id`、`telegram_username`、`telegram_id`、`role`、`position`、`other_role`）。
@@ -249,8 +253,11 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
                               ├ gitlab_*  → GitLabClient（label 白名單／scoped 互斥／無 state 變更；
                               │              含 label 管理 create/update/delete，異動即刷新白名單）
                               ├ resolve_person → 名冊（RO-2 白名單）
-                              ├ drive_search/_read_file → DriveClient（搜尋只回 metadata；
-                              │                            （私）路徑內容不外流，其餘可引用）
+                              ├ drive_search/_list_folder → DriveClient（搜尋＋資料夾瀏覽只回 metadata；
+                              │                            捷徑目標子樹視同範圍內）
+                              ├ drive_read_file/_sheet/_doc → DriveContentService（各檔型完整擷取：
+                              │                            文件全分頁、試算表全工作表、簡報備註、表單、
+                              │                            PDF／Office／Apps Script；（私）路徑內容不外流）
                               ├ hackmd_*  → HackMDClient（notes／team folders／模板）
                               └ calendar_* → CalendarService（DWD 冒用 GOOGLE_DWD_SUBJECT；
                                              邀請對象／既有 Meet 連結／新 Meet）
@@ -269,7 +276,7 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
 |---|---|
 | GL-10 卡片操作只用既有 label | `services/gitlab_client.py`：寫入前逐一比對白名單，未知 label 拒絕、不隱式補建（label 管理為 2026-08-02 起的獨立明確操作，異動後強制刷新白名單） |
 | GL-16 不變更 issue 開關/刪除 | `gitlab_client.py`：不實作 state/delete，payload 永不含 `state_event` |
-| DR-4 搜尋只回 metadata；（私）內容不外流 | `services/drive_client.py`：搜尋結果型別只有 `{name,path,url,mime}`；讀取結果依路徑標示 `private`（（私）／半形 (私) 任一層命中即私），prompt 據此禁止外流 |
+| DR-4 搜尋只回 metadata；（私）內容不外流 | `services/drive_client.py`：搜尋／瀏覽結果型別僅承載 metadata（name/path/url/mime/id/modified/target_mime）；讀取（`drive_content.py`）依路徑標示 `private`（（私）／半形 (私) 任一層命中即私，捷徑取捷徑與目標路徑聯集），prompt 據此禁止外流 |
 | RO-2 名冊欄位白名單 | `services/sheets_roster.py`：僅白名單欄位落地，`Member` 結構不承載其他欄位 |
 | HM-16 不刪除筆記/資料夾 | `services/hackmd_client.py`：無 delete 方法 |
 | NFR-6 外部內容為資料非指令 | 工具結果以 `<external_data>` 標記注入 |

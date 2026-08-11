@@ -16,6 +16,8 @@ dependencies = [
     "google-auth>=2.30",
     # HackMD 直接以 httpx 呼叫 REST
     "httpx>=0.27",
+    # Drive 內 PDF 檔文字擷取（純 Python）
+    "pypdf>=4",
     # LLM providers（包在自製 LLMClient 介面後）
     "anthropic>=0.40",
     "openai>=1.50",
