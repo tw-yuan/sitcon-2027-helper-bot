@@ -50,10 +50,23 @@ class NoteMeta:
     tags: list[str] = field(default_factory=list)
     url: str = ""
     folder: str | None = None  # 最上層資料夾名（年度，如「SITCON 2027」）；root 筆記為 None
+    folder_path: str | None = None  # 完整歸檔路徑（如「SITCON 2027/議程組/會議文件」）；root 為 None
+
+
+def _folder_path(note: dict[str, Any]) -> str | None:
+    """自 folderPaths（根→葉的資料夾物件陣列）組出完整路徑；root 筆記回 None。
+
+    HackMD 以 folderPaths 表示歸檔（非 parentFolderId）；實測 root 筆記此欄為 None。
+    """
+    fp = note.get("folderPaths")
+    if isinstance(fp, list) and fp:
+        names = [f.get("name", "") for f in fp if isinstance(f, dict)]
+        return "/".join(n for n in names if n) or None
+    return None
 
 
 def _top_folder(note: dict[str, Any]) -> str | None:
-    """自 folderPaths 取最上層資料夾名（HackMD 用 folderPaths 表示歸檔，非 parentFolderId）。"""
+    """自 folderPaths 取最上層資料夾名（年度限縮比對用）。"""
     fp = note.get("folderPaths")
     if isinstance(fp, list) and fp and isinstance(fp[0], dict):
         return fp[0].get("name")
@@ -195,6 +208,7 @@ class HackMDClient:
                     tags=list(n.get("tags") or []),
                     url=_note_url(n),
                     folder=_top_folder(n),
+                    folder_path=_folder_path(n),
                 )
                 for n in (data or [])
             ]

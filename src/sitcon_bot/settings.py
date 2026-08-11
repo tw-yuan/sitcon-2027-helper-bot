@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     hackmd_token: SecretStr
     hackmd_team_path: str
     hackmd_year_folder: str = "SITCON 2027"  # 年度根資料夾；建立筆記限縮於其子樹
-    hackmd_search_year_folders: str = "SITCON 2027,SITCON 2026"  # 搜尋範圍：限縮於這些年度資料夾
+    # （2026-08-11 移除 hackmd_search_year_folders：搜尋改涵蓋整個 team，見 HM-10 修訂）
     hackmd_meeting_folder: str = "會議文件"  # 年度根下的大籌/站立會議記錄資料夾
     hackmd_team_meeting_subfolder: str = "會議文件"  # 組別資料夾下的組會子資料夾
     hackmd_default_read_perm: str = "signed_in"
@@ -152,11 +152,6 @@ class Settings(BaseSettings):
         """不論訂閱哪幾組都會收到的組別（逗號分隔）。"""
         return [s.strip() for s in self.milestone_always_teams.split(",") if s.strip()]
 
-    @property
-    def hackmd_search_folder_list(self) -> list[str]:
-        """HackMD 搜尋範圍的年度資料夾名單（逗號分隔）。"""
-        return [s.strip() for s in self.hackmd_search_year_folders.split(",") if s.strip()]
-
     @field_validator("log_level")
     @classmethod
     def _upper_log_level(cls, v: str) -> str:
@@ -205,7 +200,8 @@ class Settings(BaseSettings):
             f"每天 {self.milestone_notify_hour:02d}:{self.milestone_notify_minute:02d}（隔天里程碑＋開著卡片）  "
             f"sheet={self.milestone_sheet_id[:12]}… gid={self.milestone_sheet_gid}  "
             f"必收組別={self.milestone_always_team_list}",
-            f"  反問續接       : ttl={self.context_ttl_seconds}s（純 reply-chain：回覆訊息才帶脈絡）",
+            f"  回覆續接       : ttl={self.context_ttl_seconds}s（純 reply-chain：回覆問句續答、"
+            "回覆小石回覆帶完整工具脈絡）",
             f"  併發          : updates={self.max_concurrent_updates} "
             f"agent回合={self.max_concurrent_agent_turns} "
             f"同一對話={'序列化' if self.serialize_per_chat else '並行（EC-16）'}",

@@ -64,8 +64,11 @@ class AgentRequest:
     user_id: int
     username: str | None
     text: str
-    # 純 reply-chain 脈絡：resume=回覆 ask_user 問句時的待答狀態；reply_context=被回覆訊息的內容
+    # 純 reply-chain 脈絡：resume=回覆 ask_user 問句時的待答狀態；history=回覆小石一般回覆時
+    # 該回合的完整 transcript（含工具紀錄，2026-08-11 修訂）；reply_context=被回覆訊息的文字
+    # （回覆他人訊息或 transcript 已失效時的後援）。三者互斥，優先序 resume > history > reply_context。
     resume: Pending | None = None
+    history: list[Message] | None = None
     reply_context: str | None = None
 
 
@@ -83,6 +86,9 @@ class AgentResult:
     media: list[Any] = field(default_factory=list)
     # 工具（react_heart）要求對觸發訊息按的 emoji；gateway 以它取代完成時的 ✅
     reaction: str | None = None
+    # 本回合的完整 transcript（含最終 assistant 回覆），供 gateway 以回覆 message_id 保存，
+    # 使用者回覆該則訊息時以完整脈絡續接（2026-08-11 修訂）
+    history: list[Message] | None = None
 
 
 @dataclass(slots=True)
@@ -90,6 +96,7 @@ class _Outcome:
     reply: str
     pending: Pending | None = None
     tool_actions: list[str] = field(default_factory=list)
+    history: list[Message] | None = None
 
 
 def _is_credential_error(exc: Exception) -> bool:
@@ -128,6 +135,12 @@ class Agent:
             p = req.resume
             results = [*p.resolved_results, ToolResultBlock(p.ask_user_id, req.text)]
             messages = [*p.messages, Message("user", results)]
+        elif req.history is not None:
+            # 使用者回覆了小石的一般回覆 → 以該回合完整 transcript（含工具紀錄）續接；
+            # 發話者身分照注（回覆者可能不是原提問者）。
+            note = await self._requester_note(ctx)
+            blocks = [TextBlock(f"{note}\n"), TextBlock(req.text)]
+            messages = [*req.history, Message("user", blocks)]
         else:
             note = await self._requester_note(ctx)
             blocks = [TextBlock(f"{note}\n")]
@@ -154,7 +167,7 @@ class Agent:
         action = outcome.tool_actions[-1] if outcome.tool_actions else "chat"
         return AgentResult(
             reply=outcome.reply, status="ok", action=action, detail=detail,
-            media=list(ctx.media), reaction=ctx.reaction,
+            media=list(ctx.media), reaction=ctx.reaction, history=outcome.history,
         )
 
     async def _requester_note(self, ctx: ToolContext) -> str:
@@ -222,7 +235,13 @@ class Agent:
         for _ in range(self._max_iterations):
             resp = await self._call_llm(system, messages)
             if not resp.tool_calls:
-                return _Outcome(reply=resp.text or "（我沒看懂，請換個說法再試一次。）", tool_actions=actions)
+                # 完整 transcript（含最終 assistant 訊息與 raw thinking）交回，供「回覆此則」續接
+                history = [*messages, resp.assistant_message()]
+                return _Outcome(
+                    reply=resp.text or "（我沒看懂，請換個說法再試一次。）",
+                    tool_actions=actions,
+                    history=history,
+                )
 
             messages.append(resp.assistant_message())
 

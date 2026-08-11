@@ -201,12 +201,10 @@ async def test_team_meeting_requires_team() -> None:
 
 
 # ------------------------------------------------------------------ #
-# 搜尋（HM-10~12）
+# 搜尋（HM-10~12；2026-08-11 修訂：涵蓋整個 team，folder 參數可限縮）
 # ------------------------------------------------------------------ #
-def _search(notes: list[NoteMeta], search_folders: list[str] | None = None) -> HackmdSearchNotesTool:
-    return HackmdSearchNotesTool(
-        FakeHackMD(notes=notes), TEMPLATES, YEAR, "會議文件", "會議文件", "Asia/Taipei", search_folders
-    )
+def _search(notes: list[NoteMeta]) -> HackmdSearchNotesTool:
+    return HackmdSearchNotesTool(FakeHackMD(notes=notes), TEMPLATES, YEAR, "會議文件", "會議文件", "Asia/Taipei")
 
 
 async def test_search_no_hit() -> None:
@@ -236,19 +234,41 @@ async def test_search_over_ten() -> None:
     assert "縮小" in reply
 
 
-async def test_search_scoped_to_year_folders() -> None:
-    notes = [
-        NoteMeta(id="a", title="贊助方案", tags=[], folder="SITCON 2027"),
-        NoteMeta(id="b", title="贊助方案", tags=[], folder="SITCON 2026"),
-        NoteMeta(id="c", title="贊助方案", tags=[], folder="SITCON 2024"),  # 範圍外年度
-        NoteMeta(id="d", title="贊助方案", tags=[], folder=None),  # root 範圍外
-    ]
-    reply = await _search(notes, ["SITCON 2027", "SITCON 2026"]).run(
-        SearchNotesArgs(title_keywords=["贊助"]), CTX
+_WHOLE_TEAM_NOTES = [
+    NoteMeta(id="a", title="贊助方案", tags=[], folder="SITCON 2027", folder_path="SITCON 2027/行銷組"),
+    NoteMeta(id="b", title="贊助方案", tags=[], folder="SITCON 2026", folder_path="SITCON 2026"),
+    NoteMeta(id="c", title="贊助方案", tags=[], folder="SITCON 2024", folder_path="SITCON 2024"),
+    NoteMeta(id="d", title="贊助方案", tags=[], folder=None),  # root（未歸檔）
+]
+
+
+async def test_search_covers_whole_team_including_root() -> None:
+    """2026-08-11 修訂：預設涵蓋所有年度＋root（先前年度限縮讓 root 1400+ 篇不可見）。"""
+    reply = await _search(_WHOLE_TEAM_NOTES).run(SearchNotesArgs(title_keywords=["贊助"]), CTX)
+    assert "命中 4 筆" in reply
+    assert "[a]" in reply and "[b]" in reply and "[c]" in reply and "[d]" in reply
+
+
+async def test_search_shows_folder_path() -> None:
+    reply = await _search(_WHOLE_TEAM_NOTES).run(SearchNotesArgs(title_keywords=["贊助"]), CTX)
+    assert "位置：SITCON 2027/行銷組" in reply
+    assert "位置：root" in reply  # 未歸檔筆記標示 root
+
+
+async def test_search_folder_param_narrows_top_folder() -> None:
+    reply = await _search(_WHOLE_TEAM_NOTES).run(
+        SearchNotesArgs(title_keywords=["贊助"], folder="SITCON 2026"), CTX
     )
-    assert "命中 2 筆" in reply  # 僅 2027/2026
-    assert "[a]" in reply and "[b]" in reply
-    assert "[c]" not in reply and "[d]" not in reply
+    assert "命中 [b]" in reply
+    assert "[a]" not in reply and "[c]" not in reply and "[d]" not in reply
+
+
+async def test_search_folder_param_root_only() -> None:
+    reply = await _search(_WHOLE_TEAM_NOTES).run(
+        SearchNotesArgs(title_keywords=["贊助"], folder="root"), CTX
+    )
+    assert "命中 [d]" in reply
+    assert "[a]" not in reply
 
 
 # ------------------------------------------------------------------ #

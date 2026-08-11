@@ -35,7 +35,7 @@ from telegram.ext import (
     filters,
 )
 
-from ..agent.context import PendingStore
+from ..agent.context import HistoryStore, PendingStore
 from ..auth.groups import GroupStore
 from ..concurrency import KeyedLock
 from ..settings import Settings
@@ -67,8 +67,11 @@ class BusinessRequest:
     username: str | None
     text: str
     trigger_message_id: int
-    # 純 reply-chain 脈絡：resume=回覆 ask_user 問句時的待答狀態；reply_context=被回覆訊息內容
+    # 純 reply-chain 脈絡（優先序由上而下）：resume=回覆 ask_user 問句時的待答狀態；
+    # history=回覆小石一般回覆時該回合的完整 transcript（含工具紀錄，2026-08-11 修訂）；
+    # reply_context=被回覆訊息內容（他人訊息或 transcript 失效時的後援）
     resume: Any = None
+    history: Any = None
     reply_context: str | None = None
 
 
@@ -85,6 +88,7 @@ class BusinessResult:
     pending: Any = None  # 若以 ask_user 收尾，帶回待答狀態供以問句 message_id 保存
     media: list[Any] = field(default_factory=list)  # 隨回覆送出的圖片（MediaItem：url/caption）
     reaction: str | None = None  # agent 要求對觸發訊息按的 emoji（react_heart ❤），取代完成時的 ✅
+    history: Any = None  # 本回合完整 transcript；以小石回覆的 message_id 保存供「回覆此則」續接
 
 
 # 業務處理器：吃 BusinessRequest 回傳 BusinessResult。
@@ -104,6 +108,7 @@ class Gateway:
         commands: CommandHandlers,
         business_handler: BusinessHandler | None = None,
         pending_store: PendingStore | None = None,
+        history_store: HistoryStore | None = None,
     ) -> None:
         self._settings = settings
         self._groups = groups
@@ -111,6 +116,7 @@ class Gateway:
         self._commands = commands
         self._business_handler = business_handler or _echo_handler
         self._pending = pending_store or PendingStore(settings.context_ttl_seconds)
+        self._history = history_store or HistoryStore(settings.context_ttl_seconds)
         self._app: Application | None = None
         self.bot_id: int = 0
         self.bot_username: str | None = None
@@ -242,13 +248,17 @@ class Gateway:
     async def _handle_business(self, message: Message, text: str) -> None:
         user = message.from_user
         assert user is not None
-        # 純 reply-chain 脈絡：回覆 ask_user 問句 → 取待答狀態續接；回覆其他訊息 → 帶其內容當脈絡
+        # 純 reply-chain 脈絡：回覆 ask_user 問句 → 待答狀態續接；回覆小石一般回覆 → 完整
+        # transcript 續接（2026-08-11 修訂）；其餘（他人訊息／已失效）→ 帶被回覆文字當脈絡
         resume = None
+        history = None
         reply_context = None
         reply_to = message.reply_to_message
         if reply_to is not None:
             resume = self._pending.take(message.chat.id, reply_to.message_id)
             if resume is None:
+                history = self._history.get(message.chat.id, reply_to.message_id)
+            if resume is None and history is None:
                 reply_context = reply_to.text or reply_to.caption
         req = BusinessRequest(
             chat_id=message.chat.id,
@@ -259,6 +269,7 @@ class Gateway:
             text=text,
             trigger_message_id=message.message_id,
             resume=resume,
+            history=history,
             reply_context=reply_context,
         )
         # 收到即回饋：👀 reaction + typing（不送佔位訊息，避免使用者漏收最終回覆通知）
@@ -290,6 +301,9 @@ class Gateway:
         # 反問待答狀態以「問句 message_id」為鍵保存；使用者回覆該問句時才續接
         if result.pending is not None and reply_mid is not None:
             self._pending.put(message.chat.id, reply_mid, result.pending)
+        # 完成回合的完整 transcript 以「回覆 message_id」保存；使用者回覆該則時以完整脈絡續接
+        if result.history is not None and reply_mid is not None:
+            self._history.put(message.chat.id, reply_mid, result.history)
         # LOG-1：記錄觸發互動（動作、目標、結果狀態、錯誤摘要）
         await self._audit.record(
             chat_id=req.chat_id,

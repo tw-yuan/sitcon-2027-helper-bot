@@ -84,11 +84,12 @@ def _req(
     chat_id: int = -100,
     thread: int | None = None,
     resume: object | None = None,
+    history: list[Message] | None = None,
     reply_context: str | None = None,
 ) -> AgentRequest:
     return AgentRequest(
         chat_id=chat_id, thread_id=thread, user_id=7, username="yuan", text=text,
-        resume=resume, reply_context=reply_context,
+        resume=resume, history=history, reply_context=reply_context,
     )
 
 
@@ -197,6 +198,54 @@ async def test_no_context_without_reply() -> None:
     await agent.handle(_req("第二件事"))
     second = " ".join(b.text for m in llm.calls[1]["messages"] for b in m.content if isinstance(b, TextBlock))
     assert "第一件事" not in second and "回一" not in second
+
+
+# ------------------------------------------------------------------ #
+# 回覆續接（2026-08-11 修訂）：完成回合交回完整 transcript，回覆該則時以其續接
+# ------------------------------------------------------------------ #
+async def test_result_carries_full_transcript() -> None:
+    llm = ScriptedLLM([_tool_resp(ToolCall("t1", "record", {"value": "官網倒數"})), _text_resp("卡片已建立")])
+    agent, _ = _agent(llm, [RecordTool()])
+    result = await agent.handle(_req("開卡：官網倒數"))
+    assert result.history is not None
+    roles = [m.role for m in result.history]
+    assert roles == ["user", "assistant", "user", "assistant"]  # 發話→tool_use→tool_result→最終回覆
+    assert any(isinstance(b, ToolResultBlock) for b in result.history[2].content)  # 工具結果在 transcript 內
+    final = result.history[-1]
+    assert any(isinstance(b, TextBlock) and b.text == "卡片已建立" for b in final.content)
+    assert final.raw is not None  # raw（thinking）保留供回填
+
+
+async def test_history_continuation_feeds_prior_tool_records() -> None:
+    llm1 = ScriptedLLM([_tool_resp(ToolCall("t1", "record", {"value": "A 案"})), _text_resp("查到 A 案")])
+    agent1, _ = _agent(llm1, [RecordTool()])
+    first = await agent1.handle(_req("查一下"))
+
+    # 使用者回覆了「查到 A 案」→ gateway 以 history 帶回 transcript
+    llm2 = ScriptedLLM([_text_resp("A 案的日期是 3/13")])
+    agent2, _ = _agent(llm2, [RecordTool()])
+    r2 = await agent2.handle(_req("那它日期是？", history=first.history))
+    assert r2.reply == "A 案的日期是 3/13"
+
+    sent = llm2.calls[0]["messages"]
+    assert sent[: len(first.history)] == first.history  # 完整前情（含工具紀錄）原樣在前
+    fed = _tool_results(sent)
+    assert any("已記錄「A 案」" in b.content for b in fed)  # 上一輪工具結果看得到
+    last = sent[-1]
+    assert last.role == "user"
+    texts = " ".join(b.text for b in last.content if isinstance(b, TextBlock))
+    assert "那它日期是？" in texts
+    assert "發話者" in texts  # 續接回合一樣附發話者身分（回覆者可能不是原提問者）
+    # 續接回合自己也交回更長的 transcript，供再往下回覆
+    assert r2.history is not None and len(r2.history) == len(first.history) + 2
+
+
+async def test_clarify_turn_has_no_history() -> None:
+    llm = ScriptedLLM([_tool_resp(ToolCall("a1", "ask_user", {"question": "哪一張？"}))])
+    agent, _ = _agent(llm, [RecordTool()])
+    result = await agent.handle(_req("改卡"))
+    assert result.status == "clarify"
+    assert result.history is None  # 反問輪走 pending 續接，不存 history
 
 
 async def test_unknown_tool_returns_notice() -> None:

@@ -9,6 +9,10 @@
 tags：模板 frontmatter 的 tags 與程式自動 tags 合併，兩者皆帶（frontmatter + API tags 欄位）。
 搜尋兩階段（HM-10~12）、編輯整份寫回（HM-13~15）、不刪除（HM-16）。
 移動筆記限縮於年度根子樹內的既定歸檔位置（同建立規則）；組別資料夾一樣不自動建立。
+
+【搜尋範圍 2026-08-11 修訂（客戶指示）】搜尋涵蓋**整個 team**（所有年度資料夾＋root——
+實測 root 有 1400+ 篇，先前的年度限縮讓它們全搜不到）；可用 folder 參數限縮頂層資料夾。
+歸檔位置（建立／移動）仍限縮年度根子樹，不受影響。
 """
 
 from __future__ import annotations
@@ -63,7 +67,6 @@ class _HackMDToolBase(Tool):
         meeting_folder: str = "會議文件",
         subfolder: str = "會議文件",
         tz: str = "Asia/Taipei",
-        search_folders: list[str] | None = None,
     ) -> None:
         self._hm = client
         self._templates = templates
@@ -71,7 +74,6 @@ class _HackMDToolBase(Tool):
         self._meeting_folder = meeting_folder
         self._subfolder = subfolder
         self._tz = tz
-        self._search_folders = search_folders or []
 
 
 # --------------------------------------------------------------------------- #
@@ -193,13 +195,23 @@ class HackmdCreateNoteTool(_HackMDToolBase):
 class SearchNotesArgs(BaseModel):
     title_keywords: list[str] = Field(default_factory=list, description="標題關鍵字")
     tags: list[str] = Field(default_factory=list, description="需包含的 tag")
+    folder: str | None = Field(
+        None,
+        description="限縮頂層資料夾名（如「SITCON 2026」；『root』＝只搜未歸檔筆記）；不給＝搜整個 team",
+    )
+
+
+def _note_line(n: object) -> str:
+    path = getattr(n, "folder_path", None) or "root"
+    return f"標題：{getattr(n, 'title', '')}｜位置：{path}｜tags：{'、'.join(getattr(n, 'tags', []))}"
 
 
 class HackmdSearchNotesTool(_HackMDToolBase):
     name = "hackmd_search_notes"
     description = (
-        "在 SITCON 2026／2027 的筆記中搜尋（以標題與 tag 過濾）。命中 2～10 筆時可再用 "
-        "hackmd_get_note 讀候選內文挑選最符合者。"
+        "在整個 HackMD team（SITCON org 全部筆記，含各年度資料夾與未歸檔的 root）中搜尋，"
+        "以標題與 tag 過濾；可用 folder 限縮頂層資料夾（如只找某年度）。"
+        "命中 2～10 筆時可再用 hackmd_get_note 讀候選內文挑選最符合者。"
     )
     args_model = SearchNotesArgs
 
@@ -214,11 +226,16 @@ class HackmdSearchNotesTool(_HackMDToolBase):
 
         title_kws = [k.strip().lower() for k in args.title_keywords if k.strip()]
         tag_kws = [t.strip() for t in args.tags if t.strip()]
-        scope = set(self._search_folders)  # 限縮於年度資料夾（如 2026/2027）；空集合表示不限縮
+        folder = (args.folder or "").strip()
 
         def match(n: object) -> bool:
-            if scope and getattr(n, "folder", None) not in scope:
-                return False  # 限縮搜尋範圍於指定年度資料夾
+            if folder:  # 使用者口頭限縮（「去年的」→ SITCON 2026）；root＝未歸檔筆記
+                top = getattr(n, "folder", None)
+                if folder.lower() == "root":
+                    if top is not None:
+                        return False
+                elif top != folder:
+                    return False
             title = getattr(n, "title", "").lower()
             tags = getattr(n, "tags", [])
             if title_kws and not all(k in title for k in title_kws):
@@ -228,17 +245,16 @@ class HackmdSearchNotesTool(_HackMDToolBase):
         hits = [n for n in notes if match(n)]
         kws = "、".join(args.title_keywords + args.tags) or "（無）"
         if not hits:
-            return f"找不到符合的筆記（關鍵字：{kws}）。可換個關鍵字。"
-        # 筆記 id 與 url 為受信任識別資訊留在圍欄外（供 LLM 據以讀取）；標題與 tags 為 team 任一成員
-        # 可寫的自由文字，包進 <external_data>（NFR-6）。
+            hint = f"（已限縮 {folder}）" if folder else ""
+            return f"找不到符合的筆記（關鍵字：{kws}）{hint}。可換個關鍵字。"
+        # 筆記 id 與 url 為受信任識別資訊留在圍欄外（供 LLM 據以讀取）；標題、位置與 tags 為 team 任一
+        # 成員可寫的自由文字，包進 <external_data>（NFR-6）。
         if len(hits) == 1:
             n = hits[0]
-            return f"命中 [{n.id}]｜{n.url}\n" + wrap_external(f"標題：{n.title}｜tags：{'、'.join(n.tags)}")
+            return f"命中 [{n.id}]｜{n.url}\n" + wrap_external(_note_line(n))
 
         shown = hits[:10]
-        lines = [
-            f"- [{n.id}]｜{n.url}\n  " + wrap_external(f"標題：{n.title}｜tags：{'、'.join(n.tags)}") for n in shown
-        ]
+        lines = [f"- [{n.id}]｜{n.url}\n  " + wrap_external(_note_line(n)) for n in shown]
         if len(hits) > 10:
             return f"命中 {len(hits)} 筆（>10），請縮小條件。前 10 筆：\n" + "\n".join(lines)  # HM-12
         return f"命中 {len(hits)} 筆，可讀內文挑選：\n" + "\n".join(lines)  # HM-11
@@ -368,9 +384,8 @@ def build_hackmd_tools(
     meeting_folder: str,
     subfolder: str,
     tz: str,
-    search_folders: list[str] | None = None,
 ) -> list[Tool]:
-    args = (client, templates, year_folder, meeting_folder, subfolder, tz, search_folders)
+    args = (client, templates, year_folder, meeting_folder, subfolder, tz)
     return [
         HackmdCreateNoteTool(*args),
         HackmdSearchNotesTool(*args),

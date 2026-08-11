@@ -168,7 +168,6 @@ async def run(settings: Settings) -> None:
                 settings.hackmd_meeting_folder,
                 settings.hackmd_team_meeting_subfolder,
                 settings.tz,
-                settings.hackmd_search_folder_list,
             ),
             *(build_calendar_tools(calendar) if calendar is not None else []),
         ]
@@ -259,6 +258,7 @@ async def run(settings: Settings) -> None:
                 username=req.username,
                 text=req.text,
                 resume=req.resume,
+                history=req.history,
                 reply_context=req.reply_context,
             )
         )
@@ -272,6 +272,7 @@ async def run(settings: Settings) -> None:
             pending=result.pending,
             media=result.media,
             reaction=result.reaction,
+            history=result.history,
         )
 
     gateway = Gateway(settings, groups, audit, commands, business_handler, pending_store=pending_store)
