@@ -373,6 +373,38 @@ async def test_open_only_excludes_review_and_closed() -> None:
 
 
 # ------------------------------------------------------------------ #
+# GL-21：title_query 在本地做子字串比對（gitlab.com 的 search= 對中文只認整詞，
+# 「預算」查不到「填預算」——2026-08-14 實測；故不得透傳）
+# ------------------------------------------------------------------ #
+async def test_title_query_substring_matched_locally_not_via_api() -> None:
+    b = FakeBackend(LABELS)
+    b.issues = {
+        1: {"iid": 1, "web_url": "u1", "title": "[場務組] 填預算", "description": None,
+            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
+        2: {"iid": 2, "web_url": "u2", "title": "場勘", "description": "回報前先確認預算上限",
+            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
+        3: {"iid": 3, "web_url": "u3", "title": "[議程組] 籌備時程表", "description": None,
+            "labels": [], "assignees": [], "due_date": None, "state": "closed"},
+        4: {"iid": 4, "web_url": "u4", "title": "Fix OpenVidu relay", "description": None,
+            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
+    }
+    c = _client(b)
+
+    hits = await c.search_issues(title_query="預算")
+    assert [i.iid for i in hits] == [1, 2]  # 子字串命中標題與描述
+    assert "search" not in b.last_filters   # 回歸防線：不得透傳 GitLab search=
+
+    hits = await c.search_issues(title_query="場務 預算")
+    assert [i.iid for i in hits] == [1]     # 多詞（空白分隔）＝ AND
+
+    hits = await c.search_issues(title_query="時程表")
+    assert [i.iid for i in hits] == [3]     # 預設 state=all，已關卡也可搜到
+
+    hits = await c.search_issues(title_query="openvidu")
+    assert [i.iid for i in hits] == [4]     # 英文不分大小寫
+
+
+# ------------------------------------------------------------------ #
 # NT-11：開著卡片查詢（2026-08-06 修訂：不限已過期）
 # ------------------------------------------------------------------ #
 def _bare_issue(iid: int, due: str | None, state: str = "opened", labels: list[str] | None = None) -> dict[str, Any]:

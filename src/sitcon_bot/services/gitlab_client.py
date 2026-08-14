@@ -503,7 +503,12 @@ class GitLabClient:
         title_query: str | None = None,
         open_only: bool = False,
     ) -> list[Issue]:
-        """條件查詢（GL-21）。open_only 採 GL-22 定義：state=opened 且無 Status::Review。"""
+        """條件查詢（GL-21）。open_only 採 GL-22 定義：state=opened 且無 Status::Review。
+
+        title_query 不透傳 GitLab `search=`：gitlab.com 的 issues 搜尋走 PostgreSQL 全文檢索，
+        中文無斷詞、只認整詞相等（「預算」查不到「填預算」），故抓回後在本地做
+        不分大小寫的子字串比對（標題＋描述；多詞以空白分隔，全部命中才算）。
+        """
         filters: dict[str, Any] = {}
         if label_filters:
             index = await self.get_label_index()
@@ -512,11 +517,15 @@ class GitLabClient:
         filters["state"] = "opened" if open_only else "all"
         if assignee_id is not None:
             filters["assignee_id"] = assignee_id
-        if title_query:
-            filters["search"] = title_query
 
         raw = await self._call(self._b.list_issues, filters)
         issues = [Issue.from_raw(r) for r in raw]
+        if title_query:
+            terms = [t.casefold() for t in title_query.split()]
+            issues = [
+                i for i in issues
+                if all(t in f"{i.title}\n{i.description or ''}".casefold() for t in terms)
+            ]
         if open_only:
             issues = [i for i in issues if "Status::Review" not in i.labels]  # GL-22
         return issues

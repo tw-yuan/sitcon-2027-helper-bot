@@ -374,7 +374,9 @@ class GitlabDeleteLabelTool(_GitLabToolBase):
 class SearchIssuesArgs(BaseModel):
     label_filters: list[str] = Field(default_factory=list, description="要過濾的既有 label（Team::、Status::、籌會）")
     assignee_id: int | None = Field(None, description="指定 assignee 的 gitlab_id")
-    title_query: str | None = Field(None, description="標題/描述關鍵字")
+    title_query: str | None = Field(
+        None, description="標題/描述關鍵字（子字串即可命中；多個詞以空白分隔時須全部命中）"
+    )
     open_only: bool = Field(False, description="只列開著的卡（opened 且無 Status::Review）")
 
 
