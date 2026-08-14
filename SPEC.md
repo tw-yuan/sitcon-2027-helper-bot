@@ -157,6 +157,12 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **GL-22** 「開著」採第 2 章定義（state opened 且無 `Status::Review`）。
 - **GL-23** 查詢結果每筆呈現：`#IID 標題｜Status｜assignees｜URL`；預設至多 10 筆並註明總數，使用者可要求下一批。
 
+### 7.5.1 Linked items（2026-08-14 追加需求：母卡追蹤批次卡）
+
+- **GL-27** 支援卡片間 Linked items 的建立（`relates_to`／`blocks`／`is_blocked_by`，預設 `relates_to`）與解除；一次可對多張對象卡操作，逐張回報成功／失敗（已連結、對象不存在、權限或方案不足時如實回報，不宣稱成功）。
+- **GL-28** 建卡可帶 `link_to_iid`：建立後把新卡連進該卡的 Linked items（批次開卡以同一張母卡追蹤）；連結失敗不影響已建立的卡，需回報「卡已建立、連結失敗」。
+- **GL-29** 讀取單卡（GL-20）時一併列出 Linked items：每筆呈現 `#IID｜Status｜到期日｜URL`＋標題，並統計開／已關張數，供母卡回報各組進度；解除連結僅拆連結、不動卡片，且兩卡本無連結不視為錯誤。
+
 ---
 
 ## 8. 功能需求 — Google Drive（唯讀搜尋）
@@ -322,7 +328,7 @@ notify_state                            -- NT-7
 | 服務 | 用途 | 端點（代表性） |
 |---|---|---|
 | Telegram Bot API | 收發訊息 | `getUpdates`（long polling）、`sendMessage`、`sendChatAction` |
-| GitLab REST v4（gitlab.com） | 卡片＋label 管理 | `GET/POST /projects/:id/labels`、`PUT/DELETE /projects/:id/labels/:name`、`GET/POST /projects/:id/issues`、`PUT /projects/:id/issues/:iid`、`GET/POST /projects/:id/issues/:iid/notes`、`GET /projects/:id/issues?<filters>` |
+| GitLab REST v4（gitlab.com） | 卡片＋label 管理 | `GET/POST /projects/:id/labels`、`PUT/DELETE /projects/:id/labels/:name`、`GET/POST /projects/:id/issues`、`PUT /projects/:id/issues/:iid`、`GET/POST /projects/:id/issues/:iid/notes`、`GET /projects/:id/issues?<filters>`、`GET/POST /projects/:id/issues/:iid/links`、`DELETE /projects/:id/issues/:iid/links/:link_id` |
 | Google Drive v3 | 檔案搜尋 | `files.list`（`corpora=drive`、`driveId`、`supportsAllDrives`、`includeItemsFromAllDrives`、`q=name/fullText contains`）、`files.get`（metadata） |
 | Google Sheets v4 | 名冊 | `spreadsheets.get`（以 gid 對應分頁名）、`spreadsheets.values.get` |
 | Google Calendar v3（DWD 冒用） | 行事曆 | `events.insert/patch/get/list/delete`（`conferenceDataVersion=1`、`sendUpdates` 依設定） |

@@ -16,14 +16,18 @@ from sitcon_bot.agent.tools.gitlab_tools import (
     GitlabCreateLabelTool,
     GitlabDeleteLabelTool,
     GitlabGetIssueTool,
+    GitlabLinkIssuesTool,
     GitlabSearchIssuesTool,
+    GitlabUnlinkIssuesTool,
     GitlabUpdateIssueTool,
     GitlabUpdateLabelTool,
+    LinkIssuesArgs,
     SearchIssuesArgs,
+    UnlinkIssuesArgs,
     UpdateIssueArgs,
     UpdateLabelArgs,
 )
-from sitcon_bot.services.gitlab_client import GitLabClient
+from sitcon_bot.services.gitlab_client import GitLabBackendError, GitLabClient
 from sitcon_bot.services.sheets_roster import Member, Roster
 
 LABELS = [
@@ -40,6 +44,8 @@ class FakeBackend:
         self.last_create_payload: dict[str, Any] | None = None
         self.applied_assignees: list[int] | None = None
         self._next = 100
+        self.links: dict[int, list[dict[str, Any]]] = {}
+        self._next_link_id = 500
 
     @staticmethod
     def _users(ids: list[int]) -> list[dict[str, Any]]:
@@ -107,6 +113,29 @@ class FakeBackend:
                     continue
             out.append(dict(iss))
         return out
+
+    def list_issue_links(self, iid: int) -> list[dict[str, Any]]:
+        return [dict(link) for link in self.links.get(iid, [])]
+
+    def create_issue_link(self, iid: int, target_iid: int, link_type: str) -> None:
+        if target_iid not in self.issues:
+            raise GitLabBackendError(404, "404 Issue Not Found")
+        if any(link["iid"] == target_iid for link in self.links.get(iid, [])):
+            raise GitLabBackendError(409, "409 issues already assigned")
+        link_id = self._next_link_id
+        self._next_link_id += 1
+        inverse = {"blocks": "is_blocked_by", "is_blocked_by": "blocks"}.get(link_type, "relates_to")
+        self.links.setdefault(iid, []).append(
+            {**self.issues[target_iid], "issue_link_id": link_id, "link_type": link_type}
+        )
+        if iid in self.issues:
+            self.links.setdefault(target_iid, []).append(
+                {**self.issues[iid], "issue_link_id": link_id, "link_type": inverse}
+            )
+
+    def delete_issue_link(self, iid: int, issue_link_id: int) -> None:
+        for lst in self.links.values():
+            lst[:] = [link for link in lst if link["issue_link_id"] != issue_link_id]
 
 
 class FakeRosterService:
@@ -315,3 +344,70 @@ async def test_delete_label_tool_unknown() -> None:
     reply = await tool.run(DeleteLabelArgs(name="不存在"), CTX)
     assert "找不到 label" in reply
     assert len(backend.labels) == len(LABELS)
+
+
+# ---------- Linked items（GL-27～GL-29：母卡追蹤，2026-08-14 追加需求） ----------
+def _card(iid: int, title: str, state: str = "opened", due: str | None = None,
+          labels: list[str] | None = None) -> dict[str, Any]:
+    return {"iid": iid, "web_url": f"https://gitlab/{iid}", "title": title, "description": None,
+            "labels": labels or [], "assignees": [], "due_date": due, "state": state}
+
+
+async def test_link_tool_batch_then_honest_failures() -> None:
+    backend = FakeBackend()
+    backend.issues = {10: _card(10, "母卡：各組填預算"), 11: _card(11, "[場務組] 填預算"),
+                      12: _card(12, "[議程組] 填預算")}
+    tool = GitlabLinkIssuesTool(_client(backend), None)
+    reply = await tool.run(LinkIssuesArgs(iid=10, target_iids=[11, 12]), CTX)
+    assert "✅ #10 已連結 2 張：#11、#12" in reply
+    assert [link["iid"] for link in backend.links[10]] == [11, 12]
+
+    reply = await tool.run(LinkIssuesArgs(iid=10, target_iids=[11, 99]), CTX)  # 已連結＋不存在
+    assert "本來就已連結" in reply
+    assert "找不到這張卡" in reply
+    assert "✅" not in reply  # 全數失敗時不出現成功列
+
+
+async def test_create_issue_with_mother_card_link() -> None:
+    backend = FakeBackend()
+    backend.issues[50] = _card(50, "母卡：各組填預算")
+    tool = GitlabCreateIssueTool(_client(backend), FakeRosterService(_roster()))
+    reply = await tool.run(CreateIssueArgs(title="[場務組] 填預算", link_to_iid=50), CTX)
+    assert "✅ 已建立 #100" in reply
+    assert "已連結母卡 #50" in reply
+    assert any(link["iid"] == 100 for link in backend.links[50])  # 母卡端看得到新卡
+
+    reply = await tool.run(CreateIssueArgs(title="[活動組] 填預算", link_to_iid=999), CTX)
+    assert "✅ 已建立 #101" in reply  # 連結失敗不影響建卡
+    assert "連結 #999 失敗" in reply
+    assert "找不到這張卡" in reply
+
+
+async def test_get_issue_lists_linked_progress() -> None:
+    backend = FakeBackend()
+    backend.issues = {
+        10: _card(10, "母卡：各組填預算"),
+        11: _card(11, "[場務組] 填預算", due="2026-09-19", labels=["Status::To Do"]),
+        12: _card(12, "[議程組] 填預算", state="closed"),
+    }
+    backend.create_issue_link(10, 11, "relates_to")
+    backend.create_issue_link(10, 12, "relates_to")
+    tool = GitlabGetIssueTool(_client(backend), None)
+    reply = await tool.run(GetIssueArgs(iid=10), CTX)
+    assert "Linked items 共 2 張（開 1／已關 1）" in reply
+    assert "#11｜Status::To Do｜due 2026-09-19｜https://gitlab/11" in reply
+    assert "#12｜closed｜https://gitlab/12" in reply
+
+    reply = await tool.run(GetIssueArgs(iid=11), CTX)  # 無 Status:: 的母卡以 state 顯示
+    assert "#10｜opened｜https://gitlab/10" in reply
+
+
+async def test_unlink_tool_reports_absent_separately() -> None:
+    backend = FakeBackend()
+    backend.issues = {10: _card(10, "母卡"), 11: _card(11, "子卡 A"), 12: _card(12, "子卡 B")}
+    backend.create_issue_link(10, 11, "relates_to")
+    tool = GitlabUnlinkIssuesTool(_client(backend), None)
+    reply = await tool.run(UnlinkIssuesArgs(iid=10, target_iids=[11, 12]), CTX)
+    assert "✅ #10 已解除連結 1 張：#11" in reply
+    assert "本來就沒有連結：#12" in reply
+    assert backend.links[10] == []

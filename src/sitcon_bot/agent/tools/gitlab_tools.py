@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,7 @@ from ...services.gitlab_client import (
     GitLabClient,
     GitLabError,
     LabelNotFoundError,
+    LinkedIssue,
 )
 from ...services.sheets_roster import Roster, RosterService, RosterUnavailableError
 from .base import Tool, ToolContext
@@ -77,6 +79,32 @@ def _fmt_issue_line(iid: int, title: str, state: str, labels: list[str], assigne
     return f"#{iid}｜{status}｜{url}\n" + wrap_external(f"標題：{title}｜指派：{who}")
 
 
+_LINK_TYPE_NOTE = {"blocks": "本卡擋住它", "is_blocked_by": "它擋住本卡"}  # 以被查看的卡為視角
+
+
+def _fmt_link_line(link: LinkedIssue) -> str:
+    """Linked items 一列：狀態＋到期日供進度追蹤；標題照 NFR-6 包 <external_data>。"""
+    i = link.issue
+    status = next((label for label in i.labels if label.startswith("Status::")), i.state)
+    parts = [f"#{i.iid}", status]
+    if i.due_date:
+        parts.append(f"due {i.due_date}")
+    note = _LINK_TYPE_NOTE.get(link.link_type)
+    if note:
+        parts.append(note)
+    parts.append(i.web_url)
+    return "｜".join(parts) + "\n" + wrap_external(f"標題：{i.title}")
+
+
+def _link_fail_reason(exc: GitLabError) -> str:
+    status = getattr(exc, "status", None)
+    if status == 409:
+        return "本來就已連結"
+    if status == 404:
+        return "找不到這張卡"
+    return str(exc)
+
+
 class _GitLabToolBase(Tool):
     def __init__(
         self, gitlab: GitLabClient, roster: RosterService | None = None, gitlab_url: str = "https://gitlab.com"
@@ -91,7 +119,9 @@ class _GitLabToolBase(Tool):
 # --------------------------------------------------------------------------- #
 class CreateIssueArgs(BaseModel):
     title: str = Field(
-        description="卡片標題；若這張卡涉及 2 個（含）以上組別，前面加「[主責組、協作組…] 」前綴"
+        description="卡片標題。同一事項批次開給多個組（一組一張）時，每張一律「[組別] 事項」且"
+        "事項文字各張一致（例：[場務組] 填預算、[議程組] 填預算）；單張卡涉及 2 個（含）以上組別時，"
+        "前面加「[主責組、協作組…] 」前綴"
     )
     description: str | None = Field(None, description="描述（整理為簡潔 markdown）")
     team: str | None = Field(
@@ -102,6 +132,10 @@ class CreateIssueArgs(BaseModel):
         default_factory=list, description="明確指定的 assignee gitlab_id（先用 resolve_person 取得）"
     )
     due_date: str | None = Field(None, description="到期日 YYYY-MM-DD（Asia/Taipei）")
+    link_to_iid: int | None = Field(
+        None,
+        description="建立後把新卡連進這張既有卡的 Linked items（批次開卡時每張帶同一張母卡 IID 供追蹤進度）",
+    )
 
 
 class GitlabCreateIssueTool(_GitLabToolBase):
@@ -142,6 +176,13 @@ class GitlabCreateIssueTool(_GitLabToolBase):
 
         issue = res.issue
         who = "、".join(a.username or str(a.id) for a in issue.assignees) or "（無）"
+        link_line = ""
+        if args.link_to_iid is not None:
+            try:
+                await self._gl.link_issues(issue.iid, args.link_to_iid)
+                link_line = f"已連結母卡 #{args.link_to_iid}"
+            except GitLabError as exc:
+                link_line = f"⚠️ 卡已建立，但連結 #{args.link_to_iid} 失敗：{_link_fail_reason(exc)}"
         parts = [
             f"✅ 已建立 #{issue.iid}",
             f"labels：{'、'.join(issue.labels)}",  # label 受白名單約束，非自由文字
@@ -149,6 +190,8 @@ class GitlabCreateIssueTool(_GitLabToolBase):
             wrap_external(f"標題：{issue.title}｜指派：{who}"),  # 標題／username 為外部可控
             assignment.note,
         ]
+        if link_line:
+            parts.insert(1, link_line)
         if res.missing_labels:
             parts.append(f"⚠️ 下列 label 未成功套用：{'、'.join(res.missing_labels)}")
         if res.missing_assignees:
@@ -265,7 +308,10 @@ class GetIssueArgs(BaseModel):
 
 class GitlabGetIssueTool(_GitLabToolBase):
     name = "gitlab_get_issue"
-    description = "讀取指定卡片的內容（標題、狀態、assignees、URL）；可一併取回人工留言以供摘要。"
+    description = (
+        "讀取指定卡片的內容（標題、狀態、assignees、URL），並列出 Linked items 連結卡片"
+        "與其進度（母卡追蹤各組進度用）；可一併取回人工留言以供摘要。"
+    )
     args_model = GetIssueArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
@@ -278,6 +324,15 @@ class GitlabGetIssueTool(_GitLabToolBase):
         out = [_fmt_issue_line(issue.iid, issue.title, issue.state, issue.labels, who, issue.web_url)]
         if issue.description:
             out.append("描述：" + _external(issue.description))
+        try:
+            links = await self._gl.get_issue_links(args.iid)
+        except GitLabError as exc:
+            links = []
+            out.append(f"（Linked items 讀取失敗：{exc}）")
+        if links:
+            closed = sum(1 for link in links if link.issue.state == "closed")
+            out.append(f"Linked items 共 {len(links)} 張（開 {len(links) - closed}／已關 {closed}）：")
+            out.extend(_fmt_link_line(link) for link in links)
         if args.include_notes:
             try:
                 notes = await self._gl.get_issue_notes(args.iid, human_only=True)
@@ -413,6 +468,74 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
         return header + "\n" + "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Linked items（2026-08-14 追加需求：母卡追蹤批次卡進度）
+# --------------------------------------------------------------------------- #
+class LinkIssuesArgs(BaseModel):
+    iid: int = Field(description="來源卡片 IID；用母卡追蹤一批卡時，母卡放這裡")
+    target_iids: list[int] = Field(description="要連結的對象卡片 IID（可一次多張）")
+    link_type: Literal["relates_to", "blocks", "is_blocked_by"] = Field(
+        "relates_to", description="連結類型；追蹤進度用預設 relates_to。blocks＝來源卡擋住對象卡"
+    )
+
+
+class GitlabLinkIssuesTool(_GitLabToolBase):
+    name = "gitlab_link_issues"
+    description = "把一張卡與多張既有卡建立 Linked items 連結（例：母卡一次連上各組任務卡以追蹤進度）。"
+    args_model = LinkIssuesArgs
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, LinkIssuesArgs)
+        ok: list[int] = []
+        failed: list[str] = []
+        for target in args.target_iids:
+            try:
+                await self._gl.link_issues(args.iid, target, args.link_type)
+                ok.append(target)
+            except CredentialError:
+                failed.append(f"#{target}（HTTP 403：權限不足，或 blocks 類連結需 GitLab Premium）")
+            except GitLabError as exc:
+                failed.append(f"#{target}（{_link_fail_reason(exc)}）")
+        parts = []
+        if ok:
+            parts.append(f"✅ #{args.iid} 已連結 {len(ok)} 張：" + "、".join(f"#{t}" for t in ok))
+        if failed:
+            parts.append("⚠️ 未連結：" + "；".join(failed))
+        return "\n".join(parts) if parts else "沒有要連結的卡片。"
+
+
+class UnlinkIssuesArgs(BaseModel):
+    iid: int = Field(description="來源卡片 IID")
+    target_iids: list[int] = Field(description="要解除連結的對象卡片 IID（必須是使用者明確指名的）")
+
+
+class GitlabUnlinkIssuesTool(_GitLabToolBase):
+    name = "gitlab_unlink_issues"
+    description = "解除卡片間的 Linked items 連結（只拆連結，不動卡片本身；兩卡間本無連結會如實回報）。"
+    args_model = UnlinkIssuesArgs
+
+    async def run(self, args: BaseModel, ctx: ToolContext) -> str:
+        assert isinstance(args, UnlinkIssuesArgs)
+        done: list[int] = []
+        absent: list[int] = []
+        failed: list[str] = []
+        for target in args.target_iids:
+            try:
+                match = await self._gl.unlink_issues(args.iid, target)
+            except GitLabError as exc:
+                failed.append(f"#{target}（{exc}）")
+                continue
+            (done if match else absent).append(target)
+        parts = []
+        if done:
+            parts.append(f"✅ #{args.iid} 已解除連結 {len(done)} 張：" + "、".join(f"#{t}" for t in done))
+        if absent:
+            parts.append("兩卡間本來就沒有連結：" + "、".join(f"#{t}" for t in absent))
+        if failed:
+            parts.append("⚠️ 解除失敗：" + "；".join(failed))
+        return "\n".join(parts) if parts else "沒有要解除的連結。"
+
+
 def build_gitlab_tools(
     gitlab: GitLabClient, roster: RosterService | None, gitlab_url: str = "https://gitlab.com"
 ) -> list[Tool]:
@@ -422,6 +545,8 @@ def build_gitlab_tools(
         GitlabCommentIssueTool(gitlab, roster, gitlab_url),
         GitlabGetIssueTool(gitlab, roster, gitlab_url),
         GitlabSearchIssuesTool(gitlab, roster, gitlab_url),
+        GitlabLinkIssuesTool(gitlab, roster, gitlab_url),
+        GitlabUnlinkIssuesTool(gitlab, roster, gitlab_url),
         GitlabCreateLabelTool(gitlab, roster, gitlab_url),
         GitlabUpdateLabelTool(gitlab, roster, gitlab_url),
         GitlabDeleteLabelTool(gitlab, roster, gitlab_url),

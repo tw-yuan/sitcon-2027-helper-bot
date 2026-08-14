@@ -109,6 +109,23 @@ class Issue:
 
 
 @dataclass(slots=True)
+class LinkedIssue:
+    """Linked items 中的一筆連結（links API 回傳＝對象卡欄位＋連結資訊）。"""
+
+    link_id: int  # issue_link_id，解除連結時使用
+    link_type: str  # relates_to / blocks / is_blocked_by（以本卡視角）
+    issue: Issue
+
+    @classmethod
+    def from_raw(cls, d: dict[str, Any]) -> LinkedIssue:
+        return cls(
+            link_id=d["issue_link_id"],
+            link_type=d.get("link_type", "relates_to"),
+            issue=Issue.from_raw(d),
+        )
+
+
+@dataclass(slots=True)
 class Note:
     id: int
     body: str
@@ -235,6 +252,9 @@ class GitLabBackend(Protocol):
     def list_issue_notes(self, iid: int) -> list[dict[str, Any]]: ...
     def create_issue_note(self, iid: int, body: str) -> dict[str, Any]: ...
     def list_issues(self, filters: dict[str, Any]) -> list[dict[str, Any]]: ...
+    def list_issue_links(self, iid: int) -> list[dict[str, Any]]: ...
+    def create_issue_link(self, iid: int, target_iid: int, link_type: str) -> None: ...
+    def delete_issue_link(self, iid: int, issue_link_id: int) -> None: ...
 
 
 _Clock = Callable[[], float]
@@ -539,6 +559,26 @@ class GitLabClient:
         issues.sort(key=lambda i: (i.due_date is None, i.due_date or "", i.iid))
         return issues
 
+    # -------------------------- Linked items（2026-08-14 追加需求：母卡追蹤） -------------------------- #
+    async def get_issue_links(self, iid: int) -> list[LinkedIssue]:
+        raw = await self._call(self._b.list_issue_links, iid)
+        links = [LinkedIssue.from_raw(r) for r in raw]
+        links.sort(key=lambda link: link.issue.iid)
+        return links
+
+    async def link_issues(self, iid: int, target_iid: int, link_type: str = "relates_to") -> None:
+        await self._call(self._b.create_issue_link, iid, target_iid, link_type)
+
+    async def unlink_issues(self, iid: int, target_iid: int) -> LinkedIssue | None:
+        """解除與對象卡的連結。links API 的刪除吃 issue_link_id 而非對象 iid，先查表對應；
+        兩卡間本無連結時回 None（不視為錯誤）。"""
+        links = await self.get_issue_links(iid)
+        match = next((link for link in links if link.issue.iid == target_iid), None)
+        if match is None:
+            return None
+        await self._call(self._b.delete_issue_link, iid, match.link_id)
+        return match
+
     # -------------------------- 重試與錯誤分類 -------------------------- #
     async def _call(self, fn: Callable[..., Any], *args: Any) -> Any:
         """在 thread 執行同步 backend 呼叫；429/5xx 指數退避重試（EC-9）、401/403 憑證錯誤（EC-10）。"""
@@ -656,6 +696,28 @@ class PyGitlabBackend:
         with _map_errors():
             objs = self._get_project().issues.list(get_all=True, **filters)
         return [dict(o.attributes) for o in objs]
+
+    def list_issue_links(self, iid: int) -> list[dict[str, Any]]:
+        with _map_errors():
+            issue = self._get_project().issues.get(iid, lazy=True)
+            links = issue.links.list(get_all=True)
+        return [dict(link.attributes) for link in links]
+
+    def create_issue_link(self, iid: int, target_iid: int, link_type: str) -> None:
+        with _map_errors():
+            issue = self._get_project().issues.get(iid, lazy=True)
+            issue.links.create(
+                {
+                    "target_project_id": self._project_path,
+                    "target_issue_iid": target_iid,
+                    "link_type": link_type,
+                }
+            )
+
+    def delete_issue_link(self, iid: int, issue_link_id: int) -> None:
+        with _map_errors():
+            issue = self._get_project().issues.get(iid, lazy=True)
+            issue.links.delete(issue_link_id)
 
 
 def build_gitlab_client(settings: Settings) -> GitLabClient:

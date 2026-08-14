@@ -57,6 +57,8 @@ class FakeBackend:
         self.last_update_payload: dict[str, Any] | None = None
         self.last_filters: dict[str, Any] | None = None
         self._next_iid = 100
+        self.links: dict[int, list[dict[str, Any]]] = {}
+        self._next_link_id = 500
 
     def _maybe_error(self, method: str) -> None:
         q = self.errors.get(method)
@@ -161,6 +163,35 @@ class FakeBackend:
                     continue
             result.append(dict(iss))
         return result
+
+    def list_issue_links(self, iid: int) -> list[dict[str, Any]]:
+        self.calls["list_issue_links"] += 1
+        self._maybe_error("list_issue_links")
+        return [dict(link) for link in self.links.get(iid, [])]
+
+    def create_issue_link(self, iid: int, target_iid: int, link_type: str) -> None:
+        self.calls["create_issue_link"] += 1
+        self._maybe_error("create_issue_link")
+        if target_iid not in self.issues:
+            raise GitLabBackendError(404, "404 Issue Not Found")
+        if any(link["iid"] == target_iid for link in self.links.get(iid, [])):
+            raise GitLabBackendError(409, "409 issues already assigned")
+        link_id = self._next_link_id
+        self._next_link_id += 1
+        inverse = {"blocks": "is_blocked_by", "is_blocked_by": "blocks"}.get(link_type, "relates_to")
+        self.links.setdefault(iid, []).append(
+            {**self.issues[target_iid], "issue_link_id": link_id, "link_type": link_type}
+        )
+        if iid in self.issues:  # GitLab 連結為雙向，鏡像另一側
+            self.links.setdefault(target_iid, []).append(
+                {**self.issues[iid], "issue_link_id": link_id, "link_type": inverse}
+            )
+
+    def delete_issue_link(self, iid: int, issue_link_id: int) -> None:
+        self.calls["delete_issue_link"] += 1
+        self._maybe_error("delete_issue_link")
+        for lst in self.links.values():
+            lst[:] = [link for link in lst if link["issue_link_id"] != issue_link_id]
 
 
 def _client(backend: FakeBackend, **kw: Any) -> GitLabClient:
@@ -426,6 +457,47 @@ async def test_open_cards_filters_and_sorts() -> None:
     issues = await _client(b).open_cards()
     assert [i.iid for i in issues] == [3, 6, 2, 1, 5]
     assert b.last_filters == {"state": "opened"}
+
+
+# ------------------------------------------------------------------ #
+# GL-27～GL-29：Linked items（2026-08-14 追加需求：母卡追蹤）
+# ------------------------------------------------------------------ #
+async def test_link_issues_and_list_sorted_bidirectional() -> None:
+    b = FakeBackend(LABELS)
+    b.issues = {10: _bare_issue(10, None), 11: _bare_issue(11, "2026-09-19"), 12: _bare_issue(12, None, "closed")}
+    c = _client(b)
+    await c.link_issues(10, 12)
+    await c.link_issues(10, 11)
+    links = await c.get_issue_links(10)
+    # 依 iid 排序
+    assert [(link.issue.iid, link.link_type) for link in links] == [(11, "relates_to"), (12, "relates_to")]
+    assert links[0].issue.due_date == "2026-09-19"
+    assert [link.issue.iid for link in await c.get_issue_links(11)] == [10]  # 連結為雙向
+
+
+async def test_link_issues_duplicate_and_missing_target_mapped() -> None:
+    b = FakeBackend(LABELS)
+    b.issues = {10: _bare_issue(10, None), 11: _bare_issue(11, None)}
+    c = _client(b)
+    await c.link_issues(10, 11)
+    with pytest.raises(GitLabAPIError) as dup:
+        await c.link_issues(10, 11)
+    assert dup.value.status == 409  # 重複連結：不可重試、狀態碼保留供工具轉譯
+    with pytest.raises(GitLabAPIError) as missing:
+        await c.link_issues(10, 99)
+    assert missing.value.status == 404
+
+
+async def test_unlink_resolves_link_id_and_absent_is_none() -> None:
+    b = FakeBackend(LABELS)
+    b.issues = {10: _bare_issue(10, None), 11: _bare_issue(11, None)}
+    c = _client(b)
+    await c.link_issues(10, 11)
+    removed = await c.unlink_issues(10, 11)  # 刪除吃 issue_link_id，client 須自行由對象 iid 對應
+    assert removed is not None and removed.issue.iid == 11
+    assert await c.get_issue_links(10) == []
+    assert await c.get_issue_links(11) == []  # 兩側連結一併消失
+    assert await c.unlink_issues(10, 11) is None  # 本無連結 → None，非錯誤
 
 
 # ------------------------------------------------------------------ #
