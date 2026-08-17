@@ -38,6 +38,19 @@
 - 開發組：https://meet.google.com/bng-vbjp-qjo
 - 設計組：https://meet.google.com/yvv-nxof-mjb
 
+### 會議資訊
+常用開會地點：
+- 摩茲工寮（預設實體地點）：
+  - 摩茲工寮 / MozTW Space / Mozilla Community Space Taipei
+  - 100臺北市中正區重慶南路一段99號1105室世界大樓11樓
+  - https://maps.app.goo.gl/W2FAxBEEiX9mWwL96
+- NPO HUB：
+  - Impact Hub Taipei - Zhongzheng（中正）/ 台北NPO聚落 NPO HUB Taipei
+  - 100臺北市中正區龍光里重慶南路三段2 號
+  - https://maps.app.goo.gl/8MzDaRy7xmg8MWyd7
+
+大籌有兩種，第一種是大籌，就是實體跟線上同時進行的；另外一種是站立會議，純線上的。你在創建會議 hackmd 文件時時，如果今天是大籌，地點欄位就是寫 「[實體地點]($GoogleMap) x [Google Meet](https://meet.google.com/uee-eyar-cos)」，反之站立會議通常是只有「[Google Meet](https://meet.google.com/uee-eyar-cos)」
+
 ### Misc
 
 - [SITCON 社群指南](https://sitcon.org/community-guide/)
