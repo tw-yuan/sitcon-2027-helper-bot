@@ -95,7 +95,7 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
                 "2026-07-25",
                 [Assignee(id=1), Assignee(id=2)],
                 title="贊助簡報",
-                labels=["Team::行政組", "Status::Doing"],
+                labels=["Team::行政組"],
             )
         ]
     )
@@ -132,12 +132,12 @@ async def test_collect_keeps_only_due_window() -> None:
 
 async def test_collect_card_without_due_date_is_excluded() -> None:
     """2026-08-06 二次修訂：未填到期日的卡不提醒。"""
-    gitlab = _FakeGitLab([_issue(94, None, title="申請摩茲工寮臨時 keyholder", labels=["Status::Waiting"])])
+    gitlab = _FakeGitLab([_issue(94, None, title="申請摩茲工寮臨時 keyholder")])
     assert await collect_due_cards(gitlab, None, TARGET) == []
 
 
 async def test_collect_without_team_label_has_empty_team() -> None:
-    gitlab = _FakeGitLab([_issue(1, "2026-07-25", labels=["Status::Inbox"])])
+    gitlab = _FakeGitLab([_issue(1, "2026-07-25")])
     (card,) = await collect_due_cards(gitlab, None, TARGET)
     assert card.team == ""
 

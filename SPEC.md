@@ -29,9 +29,9 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 | 授權群組 | 經超級管理員以 `/authorize` 授權的 Telegram 群組。 |
 | 目標專案 | GitLab 專案 `sitcon-tw/2027`（gitlab.com）。本系統唯一操作的專案。 |
 | 組別 | GitLab 上以 scoped label `Team::<組名>` 表示的 12 個組（場務、活動、總召、紀錄、編輯、行銷、行政、製播、議程、設計、財務、開發）。以 API 動態讀取為準，非硬編碼。 |
-| 狀態 label | Scoped label `Status::Inbox / Waiting / Doing / Review / To Do`。卡片狀態**只**以 label 管理，bot 不執行 open/close。 |
+| 卡片狀態 | GitLab **native status**（work item status）`Inbox / Waiting / Doing / Review / To Do`（【2026-08-17 修訂】自 `Status::` scoped label 遷移；status 集合定義於頂層群組 lifecycle，以 API 動態讀取為準）。bot 不自行 open/close；Done/Canceled 類別 status 引發的自動 close 為 GitLab 端行為。 |
 | 籌會 label | 格式「`MMDD 第N籌`」或「`MMDD 站立會議`」的一般 label（例：`0913 一籌`、`0110 站立會議`），表示卡片要在哪場會議報告。 |
-| 開著的卡 | GitLab state 為 `opened` **且**未帶 `Status::Review` 的卡。（依客戶定義「Status::Review 以外」，並排除已被籌會關閉者。） |
+| 開著的卡 | GitLab state 為 `opened` **且** native status 不是 `Review` 的卡。（Review＝做完待總召 review，不再出現於每日提醒。） |
 | 名冊 | Google Sheet（ID 設於環境變數）中指定分頁（英文欄名分頁，gid 設於環境變數）。 |
 | 職掌文件 | `config/team_charter.md`，描述各組職責範圍，供組別判斷使用。由客戶另行產出，格式為自由 markdown、各組一節。 |
 | 組長 | 名冊中 `position == "組長"` 且 `role == <該組>` 的成員。 |
@@ -61,9 +61,9 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 
 ### 4.2 代表性 Use Case（非窮舉，作為驗收情境）
 
-- UC-1 開卡自動分派：「小石 幫我開一張卡：官網首頁的倒數計時器壞了」→ bot 建卡、AI 判斷為開發組、上 `Team::開發組`＋`Status::Inbox`、assign 開發組組長、回覆卡號與連結。
+- UC-1 開卡自動分派：「小石 幫我開一張卡：官網首頁的倒數計時器壞了」→ bot 建卡、AI 判斷為開發組、上 `Team::開發組` label＋native status `Inbox`、assign 開發組組長、回覆卡號與連結。
 - UC-2 指定細節開卡：「@bot 開一張卡給行政組，標題場地保證金匯款，due 8/15，assign 給 Yuan 跟 Leaf」→ 依指定內容建卡（不觸發自動判斷）。
-- UC-3 編輯卡片：「小石 把 #42 的狀態改成 Doing，然後加上 0913 一籌」→ 更新 labels（scoped 互斥處理）。
+- UC-3 編輯卡片：「小石 把 #42 的狀態改成 Doing，然後加上 0913 一籌」→ 設定 native status（Doing）＋更新 labels。
 - UC-4 留言：「小石 在 #42 留言：場地已確認，等發票」→ 新增 comment。
 - UC-5 摘要討論：「小石 #42 底下討論到哪了」→ 讀取 comments 並摘要。
 - UC-6 條件查詢：「小石 列出行政組還開著的卡」→ 依「開著」定義過濾並列出。
@@ -118,7 +118,7 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **GL-2** 使用者未指定組別時，AI 依（a）`Team::` label 名稱、（b）職掌文件內容，判斷任務所屬組別，加上對應 `Team::<組名>` label，並將該組**組長**（名冊查得）加入 assignees。
 - **GL-3** 組別判斷無法得出唯一結論時，落到 fallback：加 `Team::總召組` label、assign 全部總召。
 - **GL-4** 使用者明示 label 或 assignee 時，以使用者指定為準，不觸發 GL-2 自動判斷（部分指定時，未指定的部分仍自動補：例如只指定 assignee 未指定組別，組別仍自動判斷）。
-- **GL-5** 新卡未指定狀態時預設加 `Status::Inbox`；使用者可口頭指定其他 `Status::` 值。
+- **GL-5** 新卡未指定狀態時預設設 native status `Inbox`；使用者可口頭指定其他 status 值（【2026-08-17 修訂】原為 `Status::Inbox` label。GitLab 端尚未設定 status 時降級：不帶狀態、照常建卡）。
 - **GL-6** 支援同時指定多位 assignee（GitLab 方案已確認支援多重指派）；建卡後以 API 回傳值核對實際套用名單，若有落差須在回覆中明列。
 - **GL-7** 支援於建卡時指定 due date（含自然語言日期：「下週五」「8/15」，以 Asia/Taipei 解析）。
 - **GL-8** 建卡描述末端附註來源列：`> _via 小石 · requested by @<telegram_username> (<telegram_user_id>)_`。
@@ -130,7 +130,8 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
   【2026-08-02 追加需求修訂】label 本身的管理開放為獨立操作（見 7.2.1）；卡片流程仍不得因未知 label 而自動建立。
 - **GL-11** label 白名單以 API 動態讀取（含分頁，全量），快取 TTL 10 分鐘，`/reload` 可強制刷新。
 - **GL-12** 使用者提及的 label 經正規化（全半形、空白、大小寫）後仍無法精確對應時，回覆錯誤並列出至多 5 個名稱最接近的既有 label 供選擇，該次變更不執行。
-- **GL-13** Scoped label 互斥由 bot 端保證：套用 `Status::X` 或 `Team::X` 前，先自最終 label 集合移除同 scope 其他值，再整組寫回。
+- **GL-13** Scoped label 互斥由 bot 端保證：套用 `Team::X` 等 scoped label 前，先自最終 label 集合移除同 scope 其他值，再整組寫回。（狀態已改用 native status，天生單值互斥。）
+- **GL-30**【2026-08-17 修訂】native status 白名單：status 只能使用 namespace 既有值（GraphQL `namespace.statuses` 動態讀取，快取 TTL 同 GL-11）；未知狀態經 GL-12 同款正規化仍無對應時拒絕並附近似候選。status 的讀取／設定走 GraphQL（`workItemUpdate.statusWidget`），REST 不支援。status 集合本身的增刪改為頂層群組 lifecycle 設定，bot 不提供。
 
 ### 7.2.1 label 管理（2026-08-02 追加需求）
 
@@ -140,7 +141,7 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 
 ### 7.3 編輯卡片
 
-- **GL-14** 支援編輯：title、description、labels（增／減／換）、assignees（增／減／換，多位）、due date（設定／清除）。
+- **GL-14** 支援編輯：title、description、native status、labels（增／減／換）、assignees（增／減／換，多位）、due date（設定／清除）。
 - **GL-15** 目標卡片辨識依序支援：(a) `#<IID>` 或卡片 URL；(b) 標題模糊比對；(c) 對話脈絡指代。模糊比對命中多張時依 TRIG-7 反問（列出 IID＋標題，至多 5 筆）。
 - **GL-16** 【硬性】bot 不得呼叫任何 state 變更（close／reopen）與刪除 API。
 - **GL-17** 編輯完成回覆變更前後摘要（僅列出實際變動的欄位）。
@@ -152,9 +153,9 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 
 ### 7.5 查詢
 
-- **GL-20** 連結速查：以 IID 或標題模糊比對取得單一卡片時，回覆標題＋狀態 label＋assignees＋URL。
-- **GL-21** 自然語言條件查詢，支援的過濾條件：組別（`Team::`）、狀態（`Status::`）、籌會 label、assignee、標題關鍵字、開著／全部。條件可組合。
-- **GL-22** 「開著」採第 2 章定義（state opened 且無 `Status::Review`）。
+- **GL-20** 連結速查：以 IID 或標題模糊比對取得單一卡片時，回覆標題＋native status＋assignees＋URL。
+- **GL-21** 自然語言條件查詢，支援的過濾條件：組別（`Team::`）、狀態（native status，本地比對——REST 無法以 status 過濾）、籌會 label、assignee、標題關鍵字、開著／全部。條件可組合。
+- **GL-22** 「開著」採第 2 章定義（state opened 且 native status ≠ `Review`）。
 - **GL-23** 查詢結果每筆呈現：`#IID 標題｜Status｜assignees｜URL`；預設至多 10 筆並註明總數，使用者可要求下一批。
 
 ### 7.5.1 Linked items（2026-08-14 追加需求：母卡追蹤批次卡）
@@ -259,7 +260,7 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **NT-8** 某群當日沒有其訂閱範圍內的事項、也沒有到期卡片時不送出（預設；`MILESTONE_NOTIFY_WHEN_EMPTY=true` 可改為仍送）。單一群組送出失敗不影響其他群組。
 - **NT-9** 管理指令（皆限超管、限已授權群組）：`/notify_on [組別…]`、`/notify_off`、`/notify_list`、`/notify_test`（立即預覽隔天內容，不影響排程狀態）。撤銷群組授權（`/revoke`）時一併移除該群訂閱。
 - **NT-10** 通知內容為試算表／GitLab 原文，注入前一律 HTML escape；本功能不經 LLM。
-- **NT-11** 到期卡片提醒（客戶於 2026-07-31 追加；2026-08-06 修訂為「所有開著」、同日二次修訂收斂為「到期在即」）：同一則訊息附上「開著」（GL-22：`state=opened` 且無 `Status::Review`）且到期日臨近的卡片——以送出日 D 而言，到期日落在 D−1～D+1（隔天到期、當天到期、過期一天內）；過期超過一天、未填到期日者皆不列。過期最久在前，最多 100 張（超出以「另有 N 張」帶過；逾長訊息依 TRIG-8 分段送出）。assignee 依名冊（gitlab_id）對應為 Telegram tag：有 `telegram_username` 用 `@username`；僅有 `telegram_id` 用 `tg://user?id=` 點擊式 mention；查無對應顯示名稱＋「無 TG 對應」；無指派顯示「未指派」。卡片不分組別，所有訂閱群皆收到相同卡片段。卡片或名冊取得失敗時**降級**（分別為略過卡片段／不 tag），不影響里程碑段；隔天無里程碑但有到期卡片時仍送出（僅卡片段）。
+- **NT-11** 到期卡片提醒（客戶於 2026-07-31 追加；2026-08-06 修訂為「所有開著」、同日二次修訂收斂為「到期在即」）：同一則訊息附上「開著」（GL-22：`state=opened` 且 native status ≠ `Review`）且到期日臨近的卡片——以送出日 D 而言，到期日落在 D−1～D+1（隔天到期、當天到期、過期一天內）；過期超過一天、未填到期日者皆不列。過期最久在前，最多 100 張（超出以「另有 N 張」帶過；逾長訊息依 TRIG-8 分段送出）。assignee 依名冊（gitlab_id）對應為 Telegram tag：有 `telegram_username` 用 `@username`；僅有 `telegram_id` 用 `tg://user?id=` 點擊式 mention；查無對應顯示名稱＋「無 TG 對應」；無指派顯示「未指派」。卡片不分組別，所有訂閱群皆收到相同卡片段。卡片或名冊取得失敗時**降級**（分別為略過卡片段／不 tag），不影響里程碑段；隔天無里程碑但有到期卡片時仍送出（僅卡片段）。
 
 ---
 

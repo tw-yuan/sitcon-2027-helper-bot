@@ -1,7 +1,8 @@
 """GitLab 工具（GL-1～GL-23）。接 GitLabClient + 名冊 + 組別解析，供 agent 呼叫。
 
-硬性防線在 GitLabClient；此層負責：組別自動指派（GL-2/3）、預設 Status::Inbox（GL-5）、
-把外部內容以 <external_data> 包起（NFR-6）、把 label 錯誤轉為 GL-12 回覆。
+硬性防線在 GitLabClient；此層負責：組別自動指派（GL-2/3）、預設狀態 Inbox（GL-5，
+2026-08-17 起為 native status 而非 Status:: label）、把外部內容以 <external_data> 包起（NFR-6）、
+把 label／status 錯誤轉為 GL-12 回覆。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from ...services.gitlab_client import (
     GitLabError,
     LabelNotFoundError,
     LinkedIssue,
+    StatusNotFoundError,
 )
 from ...services.sheets_roster import Roster, RosterService, RosterUnavailableError
 from .base import Tool, ToolContext
@@ -64,6 +66,15 @@ def _label_error(exc: LabelNotFoundError) -> str:
     return f"找不到 label「{exc.requested}」，此次未執行。最接近的既有 label：{cands}。請改用正確的 label。"
 
 
+def _status_error(exc: StatusNotFoundError) -> str:
+    cands = (
+        "、".join(exc.candidates)
+        if exc.candidates
+        else "（無相近候選；GitLab 端可能尚未設定 native status）"
+    )
+    return f"找不到狀態「{exc.requested}」，此次未執行。最接近的既有狀態：{cands}。請改用正確的狀態。"
+
+
 # 建卡/編輯時 label 或 assignee 被 GitLab 靜默忽略的可能原因（供 LLM 據實轉告，勿宣稱成功）
 _APPLY_HINT = (
     "（GitLab 未套用上述項目，常見原因：小石的 GitLab 帳號權限不足（需 Reporter 以上），"
@@ -71,12 +82,14 @@ _APPLY_HINT = (
 )
 
 
-def _fmt_issue_line(iid: int, title: str, state: str, labels: list[str], assignees: list[str], url: str) -> str:
+def _fmt_issue_line(
+    iid: int, title: str, state: str, status: str | None, assignees: list[str], url: str
+) -> str:
     """一列卡片摘要。iid／status／url 為受信任的識別資訊留在圍欄外（供 LLM 據以操作）；
-    標題與 assignee username 為外部可控自由文字，包進 <external_data>（NFR-6）。"""
-    status = next((label for label in labels if label.startswith("Status::")), state)
+    標題與 assignee username 為外部可控自由文字，包進 <external_data>（NFR-6）。
+    無 native status（未設定／未啟用）時退回 GitLab state。"""
     who = "、".join(assignees) if assignees else "（無）"
-    return f"#{iid}｜{status}｜{url}\n" + wrap_external(f"標題：{title}｜指派：{who}")
+    return f"#{iid}｜{status or state}｜{url}\n" + wrap_external(f"標題：{title}｜指派：{who}")
 
 
 _LINK_TYPE_NOTE = {"blocks": "本卡擋住它", "is_blocked_by": "它擋住本卡"}  # 以被查看的卡為視角
@@ -85,8 +98,7 @@ _LINK_TYPE_NOTE = {"blocks": "本卡擋住它", "is_blocked_by": "它擋住本�
 def _fmt_link_line(link: LinkedIssue) -> str:
     """Linked items 一列：狀態＋到期日供進度追蹤；標題照 NFR-6 包 <external_data>。"""
     i = link.issue
-    status = next((label for label in i.labels if label.startswith("Status::")), i.state)
-    parts = [f"#{i.iid}", status]
+    parts = [f"#{i.iid}", i.status or i.state]
     if i.due_date:
         parts.append(f"due {i.due_date}")
     note = _LINK_TYPE_NOTE.get(link.link_type)
@@ -127,7 +139,12 @@ class CreateIssueArgs(BaseModel):
     team: str | None = Field(
         None, description="任務所屬組名（你依職掌判斷；無法判斷時留空，會自動落總召組）"
     )
-    labels: list[str] = Field(default_factory=list, description="其他既有 label（Status::、籌會等；不要放 Team::）")
+    status: str | None = Field(
+        None, description="卡片狀態（native status，用狀態白名單裡的名稱；未指定時預設 Inbox）"
+    )
+    labels: list[str] = Field(
+        default_factory=list, description="其他既有 label（籌會等；不要放 Team::，狀態請用 status 欄位）"
+    )
     assignee_ids: list[int] = Field(
         default_factory=list, description="明確指定的 assignee gitlab_id（先用 resolve_person 取得）"
     )
@@ -140,7 +157,7 @@ class CreateIssueArgs(BaseModel):
 
 class GitlabCreateIssueTool(_GitLabToolBase):
     name = "gitlab_create_issue"
-    description = "在 sitcon-tw/2027 建立一張卡片。未指定組別時自動判斷並指派組長，未指定狀態預設 Status::Inbox。"
+    description = "在 sitcon-tw/2027 建立一張卡片。未指定組別時自動判斷並指派組長，未指定狀態預設 Inbox。"
     args_model = CreateIssueArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
@@ -148,12 +165,14 @@ class GitlabCreateIssueTool(_GitLabToolBase):
         roster = await _safe_roster(self._roster)
         try:
             index = await self._gl.get_label_index()
+            status_index = await self._gl.get_status_index()
         except CredentialError as exc:
             return str(exc)
 
         labels = list(args.labels)
-        if not any(label.startswith("Status::") for label in labels):
-            labels.append("Status::Inbox")  # GL-5
+        status = args.status
+        if status is None and status_index.names:
+            status = "Inbox"  # GL-5（GitLab 端尚未設定 native status 時略過，不擋建卡）
 
         assignment = resolve_team_assignment(args.team, roster, index)
         if assignment.team_label and not any(label.startswith("Team::") for label in labels):
@@ -168,7 +187,10 @@ class GitlabCreateIssueTool(_GitLabToolBase):
                 assignee_ids=assignees,
                 due_date=args.due_date,
                 requester=_requester_handle(roster, ctx, self._gitlab_url),
+                status=status,
             )
+        except StatusNotFoundError as exc:
+            return _status_error(exc)
         except LabelNotFoundError as exc:
             return _label_error(exc)
         except GitLabError as exc:
@@ -185,20 +207,24 @@ class GitlabCreateIssueTool(_GitLabToolBase):
                 link_line = f"⚠️ 卡已建立，但連結 #{args.link_to_iid} 失敗：{_link_fail_reason(exc)}"
         parts = [
             f"✅ 已建立 #{issue.iid}",
-            f"labels：{'、'.join(issue.labels)}",  # label 受白名單約束，非自由文字
+            # 狀態／label 受白名單約束，非自由文字
+            f"狀態：{issue.status}" if issue.status else "",
+            f"labels：{'、'.join(issue.labels)}" if issue.labels else "labels：（無）",
             issue.web_url,
             wrap_external(f"標題：{issue.title}｜指派：{who}"),  # 標題／username 為外部可控
             assignment.note,
         ]
         if link_line:
             parts.insert(1, link_line)
+        if res.missing_status:
+            parts.append(f"⚠️ 狀態「{res.missing_status}」未成功套用")
         if res.missing_labels:
             parts.append(f"⚠️ 下列 label 未成功套用：{'、'.join(res.missing_labels)}")
         if res.missing_assignees:
             parts.append(f"⚠️ 下列 assignee 未成功套用：{res.missing_assignees}")
-        if res.missing_labels or res.missing_assignees:
+        if res.missing_status or res.missing_labels or res.missing_assignees:
             parts.append(_APPLY_HINT)
-        return "\n".join(parts)
+        return "\n".join(p for p in parts if p)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +234,10 @@ class UpdateIssueArgs(BaseModel):
     iid: int = Field(description="卡片 IID")
     title: str | None = None
     description: str | None = None
-    add_labels: list[str] = Field(default_factory=list, description="要新增的既有 label")
+    status: str | None = Field(
+        None, description="要改成的狀態（native status，用狀態白名單裡的名稱；例：使用者說「移到 Doing」）"
+    )
+    add_labels: list[str] = Field(default_factory=list, description="要新增的既有 label（狀態請用 status 欄位）")
     remove_labels: list[str] = Field(default_factory=list, description="要移除的 label")
     set_assignee_ids: list[int] | None = Field(None, description="整組覆蓋 assignee（空清單=清除）")
     due_date: str | None = Field(None, description="設定到期日 YYYY-MM-DD")
@@ -217,7 +246,7 @@ class UpdateIssueArgs(BaseModel):
 
 class GitlabUpdateIssueTool(_GitLabToolBase):
     name = "gitlab_update_issue"
-    description = "編輯既有卡片：標題、描述、labels（增減換）、assignees、due date。不會變更卡片開關狀態。"
+    description = "編輯既有卡片：標題、描述、狀態（native status）、labels（增減換）、assignees、due date。"
     args_model = UpdateIssueArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
@@ -228,6 +257,7 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
                 args.iid,
                 title=args.title,
                 description=args.description,
+                status=args.status,
                 add_labels=args.add_labels,
                 remove_labels=args.remove_labels,
                 set_assignee_ids=args.set_assignee_ids,
@@ -235,12 +265,16 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
                 clear_due_date=args.clear_due_date,
                 requester=_requester_handle(roster, ctx, self._gitlab_url),
             )
+        except StatusNotFoundError as exc:
+            return _status_error(exc)
         except LabelNotFoundError as exc:
             return _label_error(exc)
         except GitLabError as exc:
             return f"編輯失敗：{exc}"
 
         missing = []
+        if res.missing_status:
+            missing.append(f"狀態：{res.missing_status}")
         if res.missing_labels:
             missing.append(f"label：{'、'.join(res.missing_labels)}")
         if res.missing_assignees:
@@ -255,6 +289,8 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
         if res.title_changed:
             changes.append("標題已更新")
             title_line = "\n新標題：" + wrap_external(res.issue.title)  # 標題為外部可控自由文字
+        if res.status_after is not None:
+            changes.append(f"狀態→{res.status_after}")
         if res.labels_added:
             changes.append(f"加 label：{'、'.join(res.labels_added)}")
         if res.labels_removed:
@@ -321,7 +357,9 @@ class GitlabGetIssueTool(_GitLabToolBase):
         except GitLabError as exc:
             return f"讀取失敗：{exc}"
         who = [a.username or str(a.id) for a in issue.assignees]
-        out = [_fmt_issue_line(issue.iid, issue.title, issue.state, issue.labels, who, issue.web_url)]
+        out = [_fmt_issue_line(issue.iid, issue.title, issue.state, issue.status, who, issue.web_url)]
+        if issue.labels:
+            out.append(f"labels：{'、'.join(issue.labels)}")  # label 受白名單約束，非自由文字
         if issue.description:
             out.append("描述：" + _external(issue.description))
         try:
@@ -350,7 +388,10 @@ class GitlabGetIssueTool(_GitLabToolBase):
 # label 管理（2026-08-02 追加需求；GL-10 的白名單約束仍適用於卡片操作）
 # --------------------------------------------------------------------------- #
 class CreateLabelArgs(BaseModel):
-    name: str = Field(description="新 label 名稱；scoped label 以 :: 分隔（如 Status::X、Team::X）")
+    name: str = Field(
+        description="新 label 名稱；scoped label 以 :: 分隔（如 Team::X）。"
+        "卡片狀態是 native status 不是 label，不要用 label 模擬狀態"
+    )
     color: str = Field("#6699cc", description="色碼 #RRGGBB 或 CSS 色名；使用者未指定時用預設")
     description: str | None = Field(None, description="label 描述（選填）")
 
@@ -427,12 +468,13 @@ class GitlabDeleteLabelTool(_GitLabToolBase):
 # 查詢
 # --------------------------------------------------------------------------- #
 class SearchIssuesArgs(BaseModel):
-    label_filters: list[str] = Field(default_factory=list, description="要過濾的既有 label（Team::、Status::、籌會）")
+    label_filters: list[str] = Field(default_factory=list, description="要過濾的既有 label（Team::、籌會）")
+    status: str | None = Field(None, description="以狀態過濾（native status，用狀態白名單裡的名稱）")
     assignee_id: int | None = Field(None, description="指定 assignee 的 gitlab_id")
     title_query: str | None = Field(
         None, description="標題/描述關鍵字（子字串即可命中；多個詞以空白分隔時須全部命中）"
     )
-    open_only: bool = Field(False, description="只列開著的卡（opened 且無 Status::Review）")
+    open_only: bool = Field(False, description="只列開著的卡（opened 且狀態非 Review）")
 
 
 class GitlabSearchIssuesTool(_GitLabToolBase):
@@ -448,7 +490,10 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
                 assignee_id=args.assignee_id,
                 title_query=args.title_query,
                 open_only=args.open_only,
+                status_filter=args.status,
             )
+        except StatusNotFoundError as exc:
+            return _status_error(exc)
         except LabelNotFoundError as exc:
             return _label_error(exc)
         except GitLabError as exc:
@@ -460,7 +505,7 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
         shown = issues[:10]
         lines = [
             _fmt_issue_line(
-                i.iid, i.title, i.state, i.labels, [a.username or str(a.id) for a in i.assignees], i.web_url
+                i.iid, i.title, i.state, i.status, [a.username or str(a.id) for a in i.assignees], i.web_url
             )
             for i in shown
         ]

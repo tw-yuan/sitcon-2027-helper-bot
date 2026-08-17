@@ -6,7 +6,7 @@ from sitcon_bot.domain.team_classifier import resolve_team_assignment
 from sitcon_bot.services.gitlab_client import LabelIndex
 from sitcon_bot.services.sheets_roster import Member, Roster
 
-LABELS = ["Team::開發組", "Team::行政組", "Team::總召組", "Status::Inbox", "Status::Doing"]
+LABELS = ["Team::開發組", "Team::行政組", "Team::總召組", "0913 一籌"]
 IDX = LabelIndex(LABELS)
 
 

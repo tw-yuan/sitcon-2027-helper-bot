@@ -322,7 +322,7 @@ class _CountingLabelBackend:
     def list_labels(self) -> list[str]:
         self.calls += 1
         time.sleep(0.05)
-        return ["Status::Inbox", "Team::開發組"]
+        return ["Team::開發組", "Team::行政組"]
 
 
 async def test_label_index_single_flight() -> None:

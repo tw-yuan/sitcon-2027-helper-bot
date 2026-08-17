@@ -1,4 +1,4 @@
-"""到期卡片提醒（NT-11，2026-08-06 二次修訂）——收集「開著」（GL-22：opened 且無 Status::Review）
+"""到期卡片提醒（NT-11，2026-08-06 二次修訂）——收集「開著」（GL-22：opened 且 native status ≠ Review）
 且到期日臨近的 GitLab 卡片：以預告目標日 target（＝隔天）為準，列出 due ∈ [target−2, target]
 （隔天到期、當天到期、過期一天內）；過期超過一天、未填到期日者皆不提醒。
 並把 assignee 換成 Telegram tag、從 Team:: label 取出組名供 digest 分組。

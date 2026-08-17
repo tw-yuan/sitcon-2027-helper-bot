@@ -22,15 +22,24 @@ from sitcon_bot.services.llm.base import (
 )
 from sitcon_bot.services.sheets_roster import Member, Roster
 
-LABELS = ["Status::Inbox", "Team::開發組", "Team::總召組"]
+LABELS = ["Team::開發組", "Team::總召組"]
+STATUSES = ["Inbox", "Doing", "Review"]  # native status（2026-08-17 修訂）
 
 
 class FakeBackend:
     def __init__(self) -> None:
         self.last_create_payload: dict[str, Any] | None = None
+        self.issue_statuses: dict[int, str] = {}
 
     def list_labels(self) -> list[str]:
         return list(LABELS)
+
+    def list_statuses(self) -> list[str]:
+        return list(STATUSES)
+
+    def set_issue_status(self, iid: int, status: str) -> str:
+        self.issue_statuses[iid] = status
+        return status
 
     def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.last_create_payload = payload
@@ -78,7 +87,7 @@ async def test_uc1_create_issue_auto_dispatch() -> None:
     tools = ToolRegistry([*build_gitlab_tools(gitlab, roster_service), *build_people_tools(roster_service)])
 
     async def provider() -> PromptData:
-        return PromptData(labels=LABELS, roster_rows=roster.to_llm_rows(), charter=None)
+        return PromptData(labels=LABELS, statuses=STATUSES, roster_rows=roster.to_llm_rows(), charter=None)
 
     llm = ScriptedLLM(
         [
@@ -103,9 +112,10 @@ async def test_uc1_create_issue_auto_dispatch() -> None:
 
     assert result.status == "ok"
     assert "#100" in result.reply
-    # 卡片以正確 label + 組長 assignee 建立
+    # 卡片以正確 label + 預設 native status + 組長 assignee 建立
     labels = set(backend.last_create_payload["labels"].split(","))
-    assert labels == {"Status::Inbox", "Team::開發組"}
+    assert labels == {"Team::開發組"}
+    assert backend.issue_statuses[100] == "Inbox"  # GL-5：預設狀態走 native status
     assert backend.last_create_payload["assignee_ids"] == [1]
     # 工具結果（含 #100）有回填給第二次 LLM 呼叫
     fed = [b for m in llm.calls[1] for b in m.content if isinstance(b, ToolResultBlock)]

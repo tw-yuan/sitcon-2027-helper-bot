@@ -9,7 +9,7 @@ from sitcon_bot.services.gitlab_client import LabelIndex
 from sitcon_bot.services.sheets_roster import Member, Roster
 
 TEAMS = ["場務", "活動", "總召", "紀錄", "編輯", "行銷", "行政", "製播", "議程", "設計", "財務", "開發"]
-FULL_LABELS = [f"Team::{t}組" for t in TEAMS] + ["Status::Inbox"]
+FULL_LABELS = [f"Team::{t}組" for t in TEAMS] + ["0913 一籌"]
 IDX = LabelIndex(FULL_LABELS)
 
 # 有組長的組 → 組長 gitlab_id；其餘組無組長 → 落總召

@@ -104,13 +104,14 @@ def test_match_tool() -> None:
 
 
 def test_match_args_operators() -> None:
-    args = {"iid": 42, "team": "開發組", "labels": ["Status::Doing"], "title": "x"}
+    args = {"iid": 42, "team": "開發組", "status": "Doing", "labels": ["0913 一籌"], "title": "x"}
     assert match_args(args, {"iid": 42})[0]
     assert match_args(args, {"team_one_of": ["開發", "開發組"]})[0]
-    assert match_args(args, {"labels_contains": ["Status::Doing"]})[0]
+    assert match_args(args, {"status_one_of": ["Doing", "In progress"]})[0]
+    assert match_args(args, {"labels_contains": ["0913 一籌"]})[0]
     assert match_args(args, {"title_present": True})[0]
     assert not match_args(args, {"iid": 99})[0]
-    assert not match_args(args, {"labels_contains": ["Status::Inbox"]})[0]
+    assert not match_args(args, {"labels_contains": ["0110 站立會議"]})[0]
     assert not match_args({}, {"title_present": True})[0]
 
 
@@ -119,10 +120,8 @@ def test_match_args_operators() -> None:
 # --------------------------------------------------------------------------- #
 async def _prompt_data() -> PromptData:
     teams = ["場務", "活動", "總召", "紀錄", "編輯", "行銷", "行政", "製播", "議程", "設計", "財務", "開發"]
-    labels = [f"Team::{t}組" for t in teams] + [
-        "Status::Inbox", "Status::Doing", "Status::Review", "Status::To Do", "Status::Waiting",
-        "0913 一籌", "0110 站立會議",
-    ]
+    labels = [f"Team::{t}組" for t in teams] + ["0913 一籌", "0110 站立會議"]
+    statuses = ["Inbox", "Waiting", "Doing", "Review", "To Do"]  # native status（2026-08-17 修訂）
     roster = [
         {"nickname": "Yuan", "gitlab_username": "yuan_tw", "gitlab_id": 1, "telegram_username": "yuan",
          "telegram_id": 100, "role": "開發組", "position": "組長", "other_role": None},
@@ -137,7 +136,7 @@ async def _prompt_data() -> PromptData:
         "## 行政組\n庶務、行文、保證金匯款、餐飲。\n"
         "## 議程組\n徵稿審稿、講者聯繫。\n"
     )
-    return PromptData(labels=labels, roster_rows=roster, charter=charter)
+    return PromptData(labels=labels, statuses=statuses, roster_rows=roster, charter=charter)
 
 
 class _Secret:

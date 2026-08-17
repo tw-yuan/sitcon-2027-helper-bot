@@ -133,6 +133,13 @@ async def run(settings: Settings) -> None:
             log.warning("label 白名單載入失敗", exc_info=True)
             return []
 
+    async def _statuses() -> list[str]:
+        try:
+            return (await gitlab.get_status_index()).names
+        except Exception:
+            log.warning("狀態白名單載入失敗", exc_info=True)
+            return []
+
     async def _roster_rows() -> tuple[list[dict[str, object]], bool]:
         try:
             return (await roster.get()).to_llm_rows(), True
@@ -143,10 +150,11 @@ async def run(settings: Settings) -> None:
             return [], False
 
     async def prompt_provider() -> PromptData:
-        # 兩者都吃快取，但冷快取／TTL 到期時是兩趟外部 I/O；併發拿可省掉一趟的等待。
-        labels, (rows, available) = await asyncio.gather(_labels(), _roster_rows())
+        # 三者都吃快取，但冷快取／TTL 到期時是多趟外部 I/O；併發拿可省掉等待。
+        labels, statuses, (rows, available) = await asyncio.gather(_labels(), _statuses(), _roster_rows())
         return PromptData(
             labels=labels,
+            statuses=statuses,
             roster_rows=rows,
             charter=charter["text"],
             knowledge=knowledge["text"],
@@ -190,6 +198,11 @@ async def run(settings: Settings) -> None:
             log.warning("label 重載失敗", exc_info=True)
             n_labels = 0
         try:
+            n_statuses = await gitlab.reload_statuses()
+        except Exception:
+            log.warning("狀態白名單重載失敗", exc_info=True)
+            n_statuses = 0
+        try:
             n_roster = len(await roster.reload())
         except RosterUnavailableError:
             n_roster = 0
@@ -214,7 +227,7 @@ async def run(settings: Settings) -> None:
         knowledge["text"] = await asyncio.to_thread(_load_doc, settings.knowledge_path)
         knowledge_state = "已載入" if knowledge["text"] else "（缺）"
         return (
-            f"label {n_labels} 個、名冊 {n_roster} 人、照片索引 {n_photos} 張、"
+            f"label {n_labels} 個、狀態 {n_statuses} 個、名冊 {n_roster} 人、照片索引 {n_photos} 張、"
             f"里程碑 {n_milestones} 筆、Drive／HackMD 快取已重載、"
             f"職掌文件{charter_state}、背景知識{knowledge_state}"
         )

@@ -13,10 +13,23 @@ async def _build(data: PromptData) -> str:
 
 
 async def test_prompt_without_charter_still_builds() -> None:
-    s = await _build(PromptData(labels=["Status::Inbox", "Team::開發組"], roster_rows=[{"nickname": "Yuan"}]))
+    s = await _build(
+        PromptData(
+            labels=["Team::開發組", "0913 一籌"],
+            statuses=["Inbox", "Doing", "Review"],
+            roster_rows=[{"nickname": "Yuan"}],
+        )
+    )
     assert "改以 Team:: label" in s  # RO-8：缺職掌文件的提示
-    assert "Status::Inbox" in s
+    assert "Team::開發組" in s
+    assert "卡片狀態白名單" in s and "Inbox、Doing、Review" in s  # native status 白名單注入
     assert "external_data" in s  # NFR-6 資料非指令聲明
+
+
+async def test_prompt_without_statuses_marks_unconfigured() -> None:
+    """GitLab 端尚未設定 native status 時，prompt 明示降級（卡片操作不帶狀態）。"""
+    s = await _build(PromptData(labels=["Team::開發組"]))
+    assert "尚未載入或 GitLab 端尚未設定" in s
 
 
 async def test_prompt_with_charter() -> None:

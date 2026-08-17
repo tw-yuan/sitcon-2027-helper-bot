@@ -5,7 +5,19 @@
          【2026-08-02 追加需求例外】label 本身的管理（create_label／update_label／delete_label）
          開放為獨立操作；每次異動後強制刷新白名單，卡片操作仍受白名單約束。
   GL-13  scoped label 互斥由 client 端保證（組最終 label 集合時先移除同 scope 舊值）。
-  GL-16  不實作任何 issue state 變更（close/reopen）與 issue 刪除；payload 永不含 state_event。
+  GL-16  不主動變更 issue state：payload 永不含 state_event。
+         【2026-08-17 修訂】卡片狀態改用 GitLab native status（work item status）後，
+         Done/Canceled 類別的 status 由 GitLab 自動連動 close——那是 GitLab 端的行為，
+         bot 仍不自己發 close/reopen。
+
+【2026-08-17 修訂】卡片狀態自 Status:: scoped label 遷移至 native status：
+  - status 只有 GraphQL API（REST 不支援），故 backend 混用兩者——issue／label CRUD 走 REST，
+    status 的清單（namespace.statuses）、讀取（widget STATUS）、設定（workItemUpdate.statusWidget）
+    走 GraphQL。
+  - status 白名單比照 label：namespace 既有 status 才能用（GL-10 精神），未知即拒絕並附近似候選。
+  - 「開著的卡」（GL-22）改為 state=opened 且 status ≠ Review。
+  - namespace 尚未設定 status（清單為空）時整體降級：不帶預設狀態、不做 Review 排除，
+    讓 GitLab 端設定完成前 bot 照常運作。
 
 外部 I/O 抽象為 GitLabBackend（可注入假物件測試）；client 疊上白名單、scoped 互斥、
 attribution（GL-8）、多 assignee 落差偵測（GL-6）、重試（EC-9）與憑證錯誤（EC-10）。
@@ -43,6 +55,15 @@ class LabelNotFoundError(GitLabError):
         self.requested = requested
         self.candidates = candidates
         super().__init__(f"label 不存在：{requested}")
+
+
+class StatusNotFoundError(GitLabError):
+    """status 不在 namespace 既有清單（GL-10 精神，2026-08-17 native status 修訂）。附近似候選。"""
+
+    def __init__(self, requested: str, candidates: list[str]) -> None:
+        self.requested = requested
+        self.candidates = candidates
+        super().__init__(f"狀態不存在：{requested}")
 
 
 class CredentialError(GitLabError):
@@ -89,6 +110,8 @@ class Issue:
     assignees: list[Assignee]
     due_date: str | None
     state: str
+    # native status 名稱（REST 不回傳，由 client 以 GraphQL 批次補上；未設定／未啟用時為 None）
+    status: str | None = None
 
     @classmethod
     def from_raw(cls, d: dict[str, Any]) -> Issue:
@@ -150,6 +173,8 @@ class CreateResult:
     missing_assignees: list[int] = field(default_factory=list)
     # 要求但未實際套用的 label（多為權限不足被 GitLab 靜默忽略）
     missing_labels: list[str] = field(default_factory=list)
+    # 卡已建立但 status 設定失敗時的目標狀態（卡片操作不因 status 失敗整筆回滾）
+    missing_status: str | None = None
 
 
 @dataclass(slots=True)
@@ -162,9 +187,14 @@ class UpdateResult:
     title_changed: bool = False
     description_changed: bool = False
     due_date_changed: bool = False
+    # native status 變更（status_after 非 None＝有實際改）
+    status_before: str | None = None
+    status_after: str | None = None
     # 要求但未實際套用（權限不足／assignee 非專案成員時 GitLab 靜默忽略）
     missing_labels: list[str] = field(default_factory=list)
     missing_assignees: list[int] = field(default_factory=list)
+    # 其他欄位已更新但 status 設定失敗時的目標狀態
+    missing_status: str | None = None
 
     def any_change(self) -> bool:
         return bool(
@@ -175,6 +205,7 @@ class UpdateResult:
             or self.title_changed
             or self.description_changed
             or self.due_date_changed
+            or self.status_after is not None
         )
 
 
@@ -205,8 +236,12 @@ def merge_labels(existing: list[str], add: list[str], remove: list[str]) -> list
     return final
 
 
+# 「已完成待總召 review」的 native status 名稱；GL-22 的「開著」排除條件
+REVIEW_STATUS = "Review"
+
+
 class LabelIndex:
-    """專案既有 label 白名單索引（GL-10/GL-11/GL-12）。"""
+    """既有名稱白名單索引（GL-10/GL-11/GL-12）；label 與 native status 共用同一套解析邏輯。"""
 
     def __init__(self, names: list[str]) -> None:
         self.names = list(names)
@@ -240,9 +275,18 @@ def with_attribution(text: str | None, requester: str) -> str:
 # backend
 # --------------------------------------------------------------------------- #
 class GitLabBackend(Protocol):
-    """同步 GitLab 存取抽象；回傳/接收 plain dict。實作可為 python-gitlab 或測試假物件。"""
+    """同步 GitLab 存取抽象；回傳/接收 plain dict。實作可為 python-gitlab＋GraphQL 或測試假物件。
+
+    status 三方法走 GraphQL（native status 無 REST API，2026-08-17 修訂）：
+      list_statuses      namespace 既有 status 名稱（未設定／未啟用時回空清單）
+      get_issue_statuses 批次讀多張卡的 status 名稱（iid → 名稱；無 status 的卡對到 None）
+      set_issue_status   設定單張卡 status，回傳實際套用的名稱
+    """
 
     def list_labels(self) -> list[str]: ...
+    def list_statuses(self) -> list[str]: ...
+    def get_issue_statuses(self, iids: list[int]) -> dict[int, str | None]: ...
+    def set_issue_status(self, iid: int, status: str) -> str: ...
     def create_label(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     def update_label(self, name: str, payload: dict[str, Any]) -> dict[str, Any]: ...
     def delete_label(self, name: str) -> None: ...
@@ -281,6 +325,10 @@ class GitLabClient:
         self._label_index: LabelIndex | None = None
         self._labels_at: float | None = None
         self._labels_lock = asyncio.Lock()
+        # native status 白名單（與 label 同一套 TTL＋single-flight，各自獨立快取）
+        self._status_index: LabelIndex | None = None
+        self._statuses_at: float | None = None
+        self._statuses_lock = asyncio.Lock()
 
     # -------------------------- label 白名單 -------------------------- #
     def _labels_fresh(self) -> bool:
@@ -318,6 +366,47 @@ class GitLabClient:
                 raise LabelNotFoundError(name, index.nearest(name))
             out.append(canon)
         return out
+
+    # -------------------------- status 白名單（2026-08-17 native status）-------------------------- #
+    def _statuses_fresh(self) -> bool:
+        return (
+            self._status_index is not None
+            and self._statuses_at is not None
+            and (self._clock() - self._statuses_at) < self._label_ttl
+        )
+
+    async def get_status_index(self, *, force: bool = False) -> LabelIndex:
+        """namespace 既有 status 名稱索引；空清單＝尚未設定 native status（降級運作）。"""
+        if not force and self._statuses_fresh():
+            assert self._status_index is not None
+            return self._status_index
+        async with self._statuses_lock:
+            if not force and self._statuses_fresh():
+                assert self._status_index is not None
+                return self._status_index
+            names = await self._call(self._b.list_statuses)
+            self._status_index = LabelIndex(names)
+            self._statuses_at = self._clock()
+            return self._status_index
+
+    async def reload_statuses(self) -> int:
+        idx = await self.get_status_index(force=True)
+        return len(idx.names)
+
+    def _validate_status(self, index: LabelIndex, name: str) -> str:
+        """把使用者提及的狀態對應到既有正式名稱；不存在即拋 StatusNotFoundError（附近似候選）。"""
+        canon = index.resolve(name)
+        if canon is None:
+            raise StatusNotFoundError(name, index.nearest(name))
+        return canon
+
+    async def _enrich_statuses(self, issues: list[Issue]) -> None:
+        """以 GraphQL 批次補上 native status（REST 的 issue 回應沒有這個欄位）。"""
+        if not issues:
+            return
+        mapping = await self._call(self._b.get_issue_statuses, [i.iid for i in issues])
+        for issue in issues:
+            issue.status = mapping.get(issue.iid)
 
     # -------------------- label 管理（2026-08-02 追加需求）-------------------- #
     # 卡片操作的白名單約束（GL-10）不變；這裡是 label 本身的 CRUD，每次異動後強制刷新白名單，
@@ -387,9 +476,14 @@ class GitLabClient:
         assignee_ids: list[int],
         due_date: str | None,
         requester: str,
+        status: str | None = None,
     ) -> CreateResult:
         index = await self.get_label_index()
         canonical = self._validate(index, label_names)
+        # status 先驗證再建卡：未知狀態整次不執行，不留半成品卡
+        status_canon: str | None = None
+        if status is not None:
+            status_canon = self._validate_status(await self.get_status_index(), status)
         final_labels = merge_labels([], canonical, [])
         desc = with_attribution(description, requester)  # GL-8
 
@@ -408,12 +502,25 @@ class GitLabClient:
         missing = [aid for aid in assignee_ids if aid not in applied]  # GL-6
         applied_labels = set(issue.labels)
         missing_labels = [name for name in final_labels if name not in applied_labels]
-        if missing or missing_labels:
+        missing_status: str | None = None
+        if status_canon is not None:
+            # status 走 GraphQL、與 REST 建卡非同一交易；設定失敗時卡已存在，據實回報不回滾
+            try:
+                issue.status = await self._call(self._b.set_issue_status, issue.iid, status_canon)
+            except GitLabError:
+                log.warning("建卡 #%s 後設定狀態「%s」失敗", issue.iid, status_canon, exc_info=True)
+                missing_status = status_canon
+        if missing or missing_labels or missing_status:
             log.warning(
-                "建卡 #%s 套用落差：labels=%s assignees=%s（多為權限不足或 assignee 非專案成員）",
-                issue.iid, missing_labels, missing,
+                "建卡 #%s 套用落差：labels=%s assignees=%s status=%s（多為權限不足或 assignee 非專案成員）",
+                issue.iid, missing_labels, missing, missing_status,
             )
-        return CreateResult(issue=issue, missing_assignees=missing, missing_labels=missing_labels)
+        return CreateResult(
+            issue=issue,
+            missing_assignees=missing,
+            missing_labels=missing_labels,
+            missing_status=missing_status,
+        )
 
     # -------------------------- 編輯 -------------------------- #
     async def update_issue(
@@ -428,13 +535,20 @@ class GitLabClient:
         due_date: str | None = None,
         clear_due_date: bool = False,
         requester: str | None = None,
+        status: str | None = None,
     ) -> UpdateResult:
-        """編輯卡片（GL-14）。labels 以最終集合覆寫（GL-13）；不觸碰 state（GL-16）。
+        """編輯卡片（GL-14）。labels 以最終集合覆寫（GL-13）；不自己發 state_event（GL-16）。
 
+        status 為 native status（GraphQL 另行設定；與現值相同時不打 API）。
         編輯描述時比照建卡/留言附上來源標註（GL-8），保留可追溯性、避免整段覆寫洗掉標註。
         """
         before = await self.get_issue(iid)
         payload: dict[str, Any] = {}
+
+        status_canon: str | None = None
+        if status is not None:
+            status_canon = self._validate_status(await self.get_status_index(), status)
+        want_status = status_canon is not None and status_canon != before.status
 
         if title is not None and title != before.title:
             payload["title"] = title
@@ -463,21 +577,36 @@ class GitLabClient:
         # 硬性：payload 永不含 state_event（GL-16）
         assert "state_event" not in payload
 
-        if not payload:
+        if not payload and not want_status:
             return UpdateResult(issue=before)
 
-        raw = await self._call(self._b.update_issue, iid, payload)
-        after = Issue.from_raw(raw)
+        after = before
+        if payload:
+            raw = await self._call(self._b.update_issue, iid, payload)
+            after = Issue.from_raw(raw)
+            after.status = before.status  # REST 回應沒有 status 欄位，沿用讀到的現值
         result = self._diff(before, after)
+        if want_status:
+            assert status_canon is not None
+            prev_status = before.status  # 先取現值：payload 為空時 after 與 before 是同一物件
+            try:
+                applied = await self._call(self._b.set_issue_status, iid, status_canon)
+                after.status = applied
+                result.issue = after
+                result.status_before = prev_status
+                result.status_after = applied
+            except GitLabError:
+                log.warning("編輯 #%s 設定狀態「%s」失敗", iid, status_canon, exc_info=True)
+                result.missing_status = status_canon
         # 落差偵測：要求新增但未套用的 label／指派（多為權限不足或 assignee 非專案成員）
         after_labels = set(after.labels)
         result.missing_labels = [name for name in add_canon if name not in after_labels]
         after_a = {a.id for a in after.assignees}
         result.missing_assignees = [aid for aid in requested_assignees if aid and aid not in after_a]
-        if result.missing_labels or result.missing_assignees:
+        if result.missing_labels or result.missing_assignees or result.missing_status:
             log.warning(
-                "編輯 #%s 套用落差：labels=%s assignees=%s",
-                iid, result.missing_labels, result.missing_assignees,
+                "編輯 #%s 套用落差：labels=%s assignees=%s status=%s",
+                iid, result.missing_labels, result.missing_assignees, result.missing_status,
             )
         return result
 
@@ -513,7 +642,9 @@ class GitLabClient:
     # -------------------------- 查詢 -------------------------- #
     async def get_issue(self, iid: int) -> Issue:
         raw = await self._call(self._b.get_issue, iid)
-        return Issue.from_raw(raw)
+        issue = Issue.from_raw(raw)
+        await self._enrich_statuses([issue])
+        return issue
 
     async def search_issues(
         self,
@@ -522,13 +653,18 @@ class GitLabClient:
         assignee_id: int | None = None,
         title_query: str | None = None,
         open_only: bool = False,
+        status_filter: str | None = None,
     ) -> list[Issue]:
-        """條件查詢（GL-21）。open_only 採 GL-22 定義：state=opened 且無 Status::Review。
+        """條件查詢（GL-21）。open_only 採 GL-22 定義：state=opened 且 status ≠ Review。
 
-        title_query 不透傳 GitLab `search=`：gitlab.com 的 issues 搜尋走 PostgreSQL 全文檢索，
-        中文無斷詞、只認整詞相等（「預算」查不到「填預算」），故抓回後在本地做
-        不分大小寫的子字串比對（標題＋描述；多詞以空白分隔，全部命中才算）。
+        status_filter 為 native status：REST 無法以 status 過濾，抓回後在本地比對
+        （GraphQL 批次補值）。title_query 不透傳 GitLab `search=`：gitlab.com 的 issues
+        搜尋走 PostgreSQL 全文檢索，中文無斷詞、只認整詞相等（「預算」查不到「填預算」），
+        故抓回後在本地做不分大小寫的子字串比對（標題＋描述；多詞以空白分隔，全部命中才算）。
         """
+        status_canon: str | None = None
+        if status_filter is not None:
+            status_canon = self._validate_status(await self.get_status_index(), status_filter)
         filters: dict[str, Any] = {}
         if label_filters:
             index = await self.get_label_index()
@@ -546,16 +682,21 @@ class GitLabClient:
                 i for i in issues
                 if all(t in f"{i.title}\n{i.description or ''}".casefold() for t in terms)
             ]
+        await self._enrich_statuses(issues)
+        if status_canon is not None:
+            issues = [i for i in issues if i.status == status_canon]
         if open_only:
-            issues = [i for i in issues if "Status::Review" not in i.labels]  # GL-22
+            issues = [i for i in issues if i.status != REVIEW_STATUS]  # GL-22
         return issues
 
     async def open_cards(self) -> list[Issue]:
-        """所有「開著」的卡片（GL-22：opened 且無 Status::Review），依到期日排序（未填者殿後）。
+        """所有「開著」的卡片（GL-22：opened 且 status ≠ Review），依到期日排序（未填者殿後）。
         NT-11 卡片提醒的到期視窗篩選在 notify/cards.py（本方法維持通用的「全部開著」語意）。
         """
         raw = await self._call(self._b.list_issues, {"state": "opened"})
-        issues = [i for i in (Issue.from_raw(r) for r in raw) if "Status::Review" not in i.labels]  # GL-22
+        issues = [Issue.from_raw(r) for r in raw]
+        await self._enrich_statuses(issues)
+        issues = [i for i in issues if i.status != REVIEW_STATUS]  # GL-22
         issues.sort(key=lambda i: (i.due_date is None, i.due_date or "", i.iid))
         return issues
 
@@ -564,6 +705,7 @@ class GitLabClient:
         raw = await self._call(self._b.list_issue_links, iid)
         links = [LinkedIssue.from_raw(r) for r in raw]
         links.sort(key=lambda link: link.issue.iid)
+        await self._enrich_statuses([link.issue for link in links])
         return links
 
     async def link_issues(self, iid: int, target_iid: int, link_type: str = "relates_to") -> None:
@@ -623,15 +765,51 @@ def _map_errors() -> Iterator[None]:
 
 
 class PyGitlabBackend:
-    """以 python-gitlab 實作 GitLabBackend；限定單一專案（GL：sitcon-tw/2027）。
+    """以 python-gitlab（REST）＋原生 GraphQL 實作 GitLabBackend；限定單一專案（GL：sitcon-tw/2027）。
 
     python-gitlab 為同步；GitLabClient 會在 to_thread 中呼叫本 backend。
+    native status 沒有 REST API（GitLab 18.x），status 三方法直接 POST /api/graphql
+    （requests 已是 python-gitlab 相依，不另加套件）。
     """
+
+    # 每次 GraphQL 查詢的 work item 批次上限（GraphQL connection 單頁上限 100）
+    _GQL_CHUNK = 100
+
+    _Q_STATUSES = """
+    query($ns: ID!) {
+      namespace(fullPath: $ns) { statuses(first: 100) { nodes { name } } }
+    }"""
+    _Q_ITEM_STATUSES = """
+    query($p: ID!, $iids: [String!]) {
+      project(fullPath: $p) {
+        workItems(iids: $iids, first: 100) {
+          nodes {
+            iid
+            widgets(onlyTypes: [STATUS]) { ... on WorkItemWidgetStatus { status { name } } }
+          }
+        }
+      }
+    }"""
+    _Q_ITEM_ID = """
+    query($p: ID!, $iid: String!) {
+      project(fullPath: $p) { workItems(iids: [$iid], first: 1) { nodes { id } } }
+    }"""
+    _M_SET_STATUS = """
+    mutation($id: WorkItemID!, $name: String!) {
+      workItemUpdate(input: {id: $id, statusWidget: {name: $name}}) {
+        workItem {
+          widgets(onlyTypes: [STATUS]) { ... on WorkItemWidgetStatus { status { name } } }
+        }
+        errors
+      }
+    }"""
 
     def __init__(self, url: str, token: str, project_path: str, timeout: int = 30) -> None:
         self._url = url
         self._token = token
         self._project_path = project_path
+        # status 定義在頂層群組；sitcon-tw/2027 的 namespace 即頂層 sitcon-tw
+        self._namespace_path = project_path.rsplit("/", 1)[0]
         self._timeout = timeout
         self._project: Any = None
 
@@ -643,6 +821,68 @@ class PyGitlabBackend:
             with _map_errors():
                 self._project = gl.projects.get(self._project_path)
         return self._project
+
+    # -------------------------- GraphQL（native status） -------------------------- #
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        import requests
+
+        try:
+            resp = requests.post(
+                self._url.rstrip("/") + "/api/graphql",
+                json={"query": query, "variables": variables},
+                headers={"PRIVATE-TOKEN": self._token},
+                timeout=self._timeout,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise GitLabBackendError(None, f"GitLab GraphQL 連線錯誤：{exc}", retryable=True) from exc
+        if resp.status_code != 200:
+            raise GitLabBackendError(
+                resp.status_code, f"GitLab GraphQL HTTP {resp.status_code}：{resp.text[:200]}"
+            )
+        body = resp.json()
+        if body.get("errors"):
+            msgs = "；".join(str(e.get("message", e)) for e in body["errors"])
+            raise GitLabBackendError(None, f"GitLab GraphQL 錯誤：{msgs}")
+        return body.get("data") or {}
+
+    @staticmethod
+    def _widget_status_name(container: dict[str, Any] | None) -> str | None:
+        for widget in ((container or {}).get("widgets") or []):
+            status = widget.get("status")
+            if status and status.get("name"):
+                return str(status["name"])
+        return None
+
+    def list_statuses(self) -> list[str]:
+        data = self._graphql(self._Q_STATUSES, {"ns": self._namespace_path})
+        ns = data.get("namespace")
+        if ns is None:
+            # namespace 查不到＝無權限或 status 功能未啟用（如非 Premium）；降級為未設定
+            return []
+        nodes = (ns.get("statuses") or {}).get("nodes") or []
+        return [str(n["name"]) for n in nodes if n.get("name")]
+
+    def get_issue_statuses(self, iids: list[int]) -> dict[int, str | None]:
+        out: dict[int, str | None] = {}
+        for i in range(0, len(iids), self._GQL_CHUNK):
+            chunk = [str(x) for x in iids[i : i + self._GQL_CHUNK]]
+            data = self._graphql(self._Q_ITEM_STATUSES, {"p": self._project_path, "iids": chunk})
+            nodes = (((data.get("project") or {}).get("workItems") or {}).get("nodes") or [])
+            for node in nodes:
+                out[int(node["iid"])] = self._widget_status_name(node)
+        return out
+
+    def set_issue_status(self, iid: int, status: str) -> str:
+        data = self._graphql(self._Q_ITEM_ID, {"p": self._project_path, "iid": str(iid)})
+        nodes = (((data.get("project") or {}).get("workItems") or {}).get("nodes") or [])
+        if not nodes:
+            raise GitLabBackendError(404, f"找不到 work item #{iid}")
+        data = self._graphql(self._M_SET_STATUS, {"id": nodes[0]["id"], "name": status})
+        payload = data.get("workItemUpdate") or {}
+        errs = payload.get("errors") or []
+        if errs:
+            raise GitLabBackendError(None, "設定狀態失敗：" + "；".join(str(e) for e in errs))
+        return self._widget_status_name(payload.get("workItem")) or status
 
     def list_labels(self) -> list[str]:
         with _map_errors():

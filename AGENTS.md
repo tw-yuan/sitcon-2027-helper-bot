@@ -235,7 +235,7 @@ DoD：單元測試覆蓋觸發判定矩陣（mention／reply／前綴／指令�
 DoD：以含全部敏感欄位的假 sheet 資料測試：載入後資料結構經序列化檢查**不含**任何白名單外欄位；組長／總召判定正確；`@` 與大小寫正規化通過。
 
 **T5 GitLab client**：python-gitlab 封裝、label 全量分頁讀取＋快取、GL-10/13 防線、issue create/update/notes/search、GL-6 assignee 核對、GL-8 attribution。
-DoD：respx／mock 測試覆蓋：白名單拒絕與近似候選、scoped 互斥替換、多 assignee 落差偵測、「開著」查詢條件（state=opened 且無 Status::Review）。
+DoD：respx／mock 測試覆蓋：白名單拒絕與近似候選、scoped 互斥替換、多 assignee 落差偵測、「開著」查詢條件（state=opened 且 native status ≠ Review，2026-08-17 修訂）。
 
 **T6 LLM adapter**：4.3 兩個 adapter＋thinking 對映＋用量記錄。
 DoD：mock 測試雙 adapter 的 tool call 往返與 thinking 參數；切換 `.env` 不改碼即換 provider。
@@ -298,7 +298,7 @@ DoD：照 README 在乾淨環境走一遍可完成 SPEC 16.5。
   expect:
     tool: gitlab_create_issue
     args_subset:
-      labels_contains: ["Status::Inbox"]
+      status: "Inbox"
       team_label_one_of: ["Team::設計組", "Team::開發組", "Team::行銷組"]
 ```
 

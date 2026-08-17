@@ -57,7 +57,8 @@ BEHAVIOR = """行為規則：
   create_meet。邀請對象直接帶 email；一次要建多場活動就逐場呼叫 calendar_create_event。
 - 只有在「指令歧義導致無法執行」時才用 ask_user 反問（例：模糊比對命中多張卡、人名對到多人、
   會議類型無法判斷），以單一問題列出候選讓使用者選擇；其餘情況一律直接執行或用工具查證。
-- 「開著的卡」定義：GitLab state 為 opened 且未帶 Status::Review。
+- 「開著的卡」定義：GitLab state 為 opened 且狀態（native status）不是 Review
+  （Review＝做完待總召 review）。
 - 使用者未指定組別時，依 label 與職掌文件判斷所屬組別；無法唯一判斷時落到總召組。
 - 建卡標題格式：同一事項**批次開給多個組**（一組一張）時，每張標題一律「[組別] 事項」，
   事項文字各張保持一致（例：「[場務組] 填預算」「[議程組] 填預算」），方便整批對照與搜尋。
@@ -81,6 +82,9 @@ BEHAVIOR = """行為規則：
   一句話記下（一次一件事）；問「你記得什麼」用 memory_list。要求「忘記／刪掉」屬破壞性操作，
   必須對到明確編號才能 memory_forget；模糊時先列清單或用 ask_user 確認。
 - 建卡／留言的來源標註由工具自動附加，你不需自行加。
+- 卡片狀態用 GitLab native status（建卡／編輯的 status 欄位、查詢的 status 過濾），
+  只能用狀態白名單裡的名稱；使用者說「移到／改成某狀態」就用 status 欄位，
+  不要用 label 表達狀態。
 - 建卡／編輯卡片的 label 只能用專案既有的；不確定時交給工具驗證，勿自創。使用者明確要求
   管理 label 本身（新增／改名／換色／刪除）時，用 gitlab_create_label／gitlab_update_label／
   gitlab_delete_label，事後白名單會自動更新。"""
@@ -122,6 +126,7 @@ class PromptData:
     """組 prompt 所需的動態資料（每輪吃快取重組）。"""
 
     labels: list[str] = field(default_factory=list)
+    statuses: list[str] = field(default_factory=list)  # native status 白名單（2026-08-17 修訂）
     roster_rows: list[dict[str, object]] = field(default_factory=list)
     charter: str | None = None
     knowledge: str | None = None
@@ -140,6 +145,15 @@ def _labels_section(labels: list[str]) -> str:
         "專案 label 白名單（只能使用以下既有 label；scoped label 以 :: 分隔，"
         "同 scope 互斥；籌會 label 形如「MMDD 第N籌」或「MMDD 站立會議」）：\n"
         + "、".join(labels)
+    )
+
+
+def _statuses_section(statuses: list[str]) -> str:
+    if not statuses:
+        return "卡片狀態白名單（native status）：（尚未載入或 GitLab 端尚未設定；此時卡片操作不帶狀態）"
+    return (
+        "卡片狀態白名單（GitLab native status，非 label；status 欄位只能用以下名稱）：\n"
+        + "、".join(statuses)
     )
 
 
@@ -220,6 +234,7 @@ class PromptBuilder:
             DOC_SEARCH,
             f"今天是 {self._today()}，時區 {self._tz}；所有日期解析與顯示都用此時區。",
             _labels_section(data.labels),
+            _statuses_section(data.statuses),
             _roster_section(data.roster_rows, data.roster_available),
             _charter_section(data.charter),
             _knowledge_section(data.knowledge),
