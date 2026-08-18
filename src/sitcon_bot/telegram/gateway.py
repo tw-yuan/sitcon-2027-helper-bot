@@ -19,17 +19,29 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from telegram import InputMediaPhoto, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Message,
+    MessageEntity,
+    ReactionTypeEmoji,
+    ReplyParameters,
+    Update,
+)
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     AIORateLimiter,
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     ContextTypes,
     MessageHandler,
     filters,
@@ -54,6 +66,40 @@ TYPING_INTERVAL = 4.0  # 秒；< 5 秒以維持 typing 指示（NFR-1 / AGENTS 4
 REACT_RECEIVED = "👀"
 REACT_DONE = "✅"
 GENERIC_ERROR = "小石遇到未預期的錯誤，請稍後再試或通知管理員。"
+
+# LLM 服務出問題時的錯誤回覆掛「重試」按鈕：按下即以原始請求重跑，並就地更新該則錯誤訊息。
+RETRY_PREFIX = "retry:"
+RETRY_BUTTON_TEXT = "🔄 重試"
+RETRY_IN_PROGRESS = "🔄 重試中…"
+RETRY_GONE = "這個重試按鈕已過期或正在重試中，請重新傳送原本的訊息。"
+
+
+class RetryStore:
+    """token → 原始 BusinessRequest；take 即移除（防連點重複觸發），TTL 過期或重啟即失效。"""
+
+    def __init__(self, ttl_seconds: int, max_entries: int = 200, clock: Callable[[], float] = time.monotonic) -> None:
+        self._ttl = ttl_seconds
+        self._max = max_entries
+        self._clock = clock
+        self._store: dict[str, tuple[float, BusinessRequest]] = {}
+
+    def put(self, req: BusinessRequest) -> str:
+        now = self._clock()
+        for k in [k for k, (at, _) in self._store.items() if (now - at) > self._ttl]:
+            self._store.pop(k, None)
+        if len(self._store) >= self._max:
+            for k, _ in sorted(self._store.items(), key=lambda kv: kv[1][0])[: len(self._store) - self._max + 1]:
+                self._store.pop(k, None)
+        token = secrets.token_hex(8)
+        self._store[token] = (now, req)
+        return token
+
+    def take(self, token: str) -> BusinessRequest | None:
+        item = self._store.pop(token, None)
+        if item is None:
+            return None
+        at, req = item
+        return req if (self._clock() - at) <= self._ttl else None
 
 
 @dataclass(slots=True)
@@ -126,6 +172,8 @@ class Gateway:
         # 關掉即為 SPEC EC-16 的「同群組併發觸發彼此不阻塞」。
         self._chat_lock = KeyedLock() if settings.serialize_per_chat else None
         self._agent_slots = asyncio.Semaphore(max(1, settings.max_concurrent_agent_turns))
+        # LLM 服務錯誤的「重試」按鈕：token → 原始請求；與 reply-chain 同一套 TTL
+        self._retries = RetryStore(settings.context_ttl_seconds)
 
     # ------------------------------------------------------------------ #
     # 生命週期
@@ -144,6 +192,7 @@ class Gateway:
             .build()
         )
         app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, self._on_message))
+        app.add_handler(CallbackQueryHandler(self._on_callback, pattern=f"^{RETRY_PREFIX}"))
         self._app = app
 
         await app.initialize()
@@ -153,7 +202,7 @@ class Gateway:
         log.info("Telegram 連線成功：@%s (id=%s)", me.username, me.id)
 
         await app.start()
-        await app.updater.start_polling(drop_pending_updates=False, allowed_updates=["message"])
+        await app.updater.start_polling(drop_pending_updates=False, allowed_updates=["message", "callback_query"])
         log.info("開始長輪詢；等待訊息…")
         self.ready.set()
         try:
@@ -273,50 +322,132 @@ class Gateway:
             reply_context=reply_context,
         )
         # 收到即回饋：👀 reaction + typing（不送佔位訊息，避免使用者漏收最終回覆通知）
-        await self._react(message, REACT_RECEIVED)
+        await self._react(req.chat_id, req.trigger_message_id, REACT_RECEIVED)
         try:
-            # typing 包在鎖外：排隊等前一則跑完的期間也持續顯示「輸入中」。
-            async with self._typing(req.chat_id, req.thread_id):
-                # 同一對話序列化 → 同群回覆保持順序；再取全域額度擋突發流量。
-                async with self._serialized(req.chat_id, req.thread_id), self._agent_slots:
-                    result = await self._business_handler(req)
+            result = await self._run_business(req)
         except Exception:  # 業務層未預期錯誤：回一則錯誤說明，不中斷長輪詢
             log.exception("業務處理未預期錯誤 chat_id=%s", req.chat_id)
             await self._reply(message, escape_html(GENERIC_ERROR))
             await self._audit.record(
-                chat_id=req.chat_id, chat_title=req.chat_title, user_id=req.user_id,
-                username=req.username, trigger_text=text, action="error", target=None,
-                detail=None, status="error", error="unhandled",
+                chat_id=req.chat_id,
+                chat_title=req.chat_title,
+                user_id=req.user_id,
+                username=req.username,
+                trigger_text=text,
+                action="error",
+                target=None,
+                detail=None,
+                status="error",
+                error="unhandled",
             )
             return
         # 業務回覆為 LLM 產生的動態內容 → escape 後才以 HTML 送出（避免破壞 HTML / 注入）
-        reply_mid = await self._reply(message, escape_html(result.reply))
+        reply_mid = await self._reply(message, escape_html(result.reply), reply_markup=self._retry_markup(req, result))
+        await self._finalize(req, result, reply_mid)
+
+    async def _run_business(self, req: BusinessRequest) -> BusinessResult:
+        # typing 包在鎖外：排隊等前一則跑完的期間也持續顯示「輸入中」。
+        async with self._typing(req.chat_id, req.thread_id):
+            # 同一對話序列化 → 同群回覆保持順序；再取全域額度擋突發流量。
+            async with self._serialized(req.chat_id, req.thread_id), self._agent_slots:
+                return await self._business_handler(req)
+
+    def _retry_markup(self, req: BusinessRequest, result: BusinessResult) -> InlineKeyboardMarkup | None:
+        """LLM 服務問題（llm_unavailable）的錯誤回覆掛「重試」按鈕，按下以原始請求重跑。"""
+        if result.error != "llm_unavailable":
+            return None
+        token = self._retries.put(req)
+        return InlineKeyboardMarkup([[InlineKeyboardButton(RETRY_BUTTON_TEXT, callback_data=f"{RETRY_PREFIX}{token}")]])
+
+    async def _finalize(self, req: BusinessRequest, result: BusinessResult, reply_mid: int | None) -> None:
+        """回覆送出後的共同收尾：reaction／縮圖／反問與 transcript 保存／稽核（LOG-1）。"""
         if result.status == "ok":
             if result.media:  # 代表縮圖（photo_search）→ 以圖片送出
-                await self._send_media(message, result.media)
+                await self._send_media(req, result.media)
             # 完成 → ✅；agent 有按愛心（react_heart）則以 ❤ 取代（bot 一則訊息只能掛一個 reaction）
-            await self._react(message, result.reaction or REACT_DONE)
+            await self._react(req.chat_id, req.trigger_message_id, result.reaction or REACT_DONE)
         elif result.reaction:  # clarify 也保留愛心（維持 👀 只在未按愛心時）
-            await self._react(message, result.reaction)
+            await self._react(req.chat_id, req.trigger_message_id, result.reaction)
         # 反問待答狀態以「問句 message_id」為鍵保存；使用者回覆該問句時才續接
         if result.pending is not None and reply_mid is not None:
-            self._pending.put(message.chat.id, reply_mid, result.pending)
+            self._pending.put(req.chat_id, reply_mid, result.pending)
         # 完成回合的完整 transcript 以「回覆 message_id」保存；使用者回覆該則時以完整脈絡續接
         if result.history is not None and reply_mid is not None:
-            self._history.put(message.chat.id, reply_mid, result.history)
+            self._history.put(req.chat_id, reply_mid, result.history)
         # LOG-1：記錄觸發互動（動作、目標、結果狀態、錯誤摘要）
         await self._audit.record(
             chat_id=req.chat_id,
             chat_title=req.chat_title,
             user_id=req.user_id,
             username=req.username,
-            trigger_text=text,
+            trigger_text=req.text,
             action=result.action,
             target=result.target,
             detail=result.detail,
             status=result.status,
             error=result.error,
         )
+
+    async def _on_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """「重試」按鈕：取回原始請求重跑 agent 回合，結果就地更新該則錯誤訊息。"""
+        q = update.callback_query
+        if q is None or not (q.data or "").startswith(RETRY_PREFIX):
+            return
+        assert self._app is not None
+        msg = q.message  # 可能為 InaccessibleMessage（仍有 message_id）；None 代表訊息已不可考
+        req = self._retries.take((q.data or "")[len(RETRY_PREFIX) :])
+        if req is None or msg is None:
+            with contextlib.suppress(Exception):
+                await q.answer(RETRY_GONE)
+            if msg is not None:  # 移除失效按鈕，避免重複點擊
+                with contextlib.suppress(Exception):
+                    await self._app.bot.edit_message_reply_markup(
+                        chat_id=msg.chat.id, message_id=msg.message_id, reply_markup=None
+                    )
+            return
+        # 按鈕任何群組成員都可按，但群組須仍在授權名單（授權可能在按下前被撤銷）
+        if not (self._groups.is_authorized(req.chat_id) or q.from_user.id == self._settings.telegram_admin_id):
+            with contextlib.suppress(Exception):
+                await q.answer("此對話已不在授權名單，無法重試。")
+            return
+        with contextlib.suppress(Exception):
+            await q.answer("重試中…")
+        mid = msg.message_id
+        await self._edit(req.chat_id, mid, RETRY_IN_PROGRESS)
+        try:
+            result = await self._run_business(req)
+        except Exception:  # 與 _handle_business 同界線：不可讓例外中斷長輪詢
+            log.exception("重試回合未預期錯誤 chat_id=%s", req.chat_id)
+            await self._edit(req.chat_id, mid, escape_html(GENERIC_ERROR))
+            await self._audit.record(
+                chat_id=req.chat_id,
+                chat_title=req.chat_title,
+                user_id=req.user_id,
+                username=req.username,
+                trigger_text=req.text,
+                action="error",
+                target=None,
+                detail={"retry": True},
+                status="error",
+                error="unhandled",
+            )
+            return
+        result.detail = {**(result.detail or {}), "retry": True}
+        # 結果就地更新該則錯誤訊息；仍失敗則重掛按鈕可再重試。逾長時第一段就地更新、其餘分段回覆
+        chunks = split_message(escape_html(result.reply))
+        edited = await self._edit(req.chat_id, mid, chunks[0], reply_markup=self._retry_markup(req, result))
+        for chunk in chunks[1:]:
+            with contextlib.suppress(Exception):
+                await self._app.bot.send_message(
+                    chat_id=req.chat_id,
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    reply_parameters=ReplyParameters(
+                        message_id=req.trigger_message_id, allow_sending_without_reply=True
+                    ),
+                    message_thread_id=req.thread_id,
+                )
+        await self._finalize(req, result, mid if edited else None)
 
     # ------------------------------------------------------------------ #
     # 輔助
@@ -365,7 +496,7 @@ class Gateway:
                 )
             await asyncio.sleep(TYPING_INTERVAL)
 
-    async def _send_media(self, message: Message, media: list[Any]) -> None:
+    async def _send_media(self, req: BusinessRequest, media: list[Any]) -> None:
         """送出代表縮圖（單張用 send_photo、多張用媒體群組）；失敗靜默略過（連結已在文字回覆內）。
 
         Telegram 會自行抓取圖片 URL；圖組上限 10 張。caption 為純文字（含 Flickr 連結，會自動變可點）。
@@ -374,23 +505,23 @@ class Gateway:
         items = [m for m in media if getattr(m, "url", None)][:10]
         if not items:
             return
-        reply_params = ReplyParameters(message_id=message.message_id, allow_sending_without_reply=True)
+        reply_params = ReplyParameters(message_id=req.trigger_message_id, allow_sending_without_reply=True)
         with contextlib.suppress(Exception):
             if len(items) == 1:
                 await self._app.bot.send_photo(
-                    chat_id=message.chat.id,
+                    chat_id=req.chat_id,
                     photo=items[0].url,
                     caption=items[0].caption or None,
                     reply_parameters=reply_params,
-                    message_thread_id=message.message_thread_id,
+                    message_thread_id=req.thread_id,
                 )
             else:
                 group = [InputMediaPhoto(media=m.url, caption=m.caption or None) for m in items]
                 await self._app.bot.send_media_group(
-                    chat_id=message.chat.id,
+                    chat_id=req.chat_id,
                     media=group,
                     reply_parameters=reply_params,
-                    message_thread_id=message.message_thread_id,
+                    message_thread_id=req.thread_id,
                 )
 
     async def send_html(self, chat_id: int, thread_id: int | None, text: str) -> bool:
@@ -417,27 +548,26 @@ class Gateway:
                 break
         return ok
 
-    async def _react(self, message: Message, emoji: str) -> None:
+    async def _react(self, chat_id: int, message_id: int, emoji: str) -> None:
         """對觸發訊息設定 emoji reaction（進度回饋）；失敗（如群組未開放該表情）靜默略過。"""
         assert self._app is not None
         with contextlib.suppress(Exception):
             await self._app.bot.set_message_reaction(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
+                chat_id=chat_id,
+                message_id=message_id,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
 
-    async def _reply(self, message: Message, text: str) -> int | None:
+    async def _reply(self, message: Message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> int | None:
         """以 HTML parse mode 分段回覆；每段 reply 至觸發訊息並帶 thread_id（TRIG-5/8）。
 
         回傳第一段送出的 message_id（供 reply-chain 保存反問狀態）；全數失敗則回 None。
+        reply_markup（如「重試」按鈕）只掛在第一段。
         text 須為合法 HTML：靜態模板可含 <b> 等標籤；動態/外部內容由呼叫端先 escape_html
         （指令回覆在 commands.py escape、業務回覆在 _handle_business escape）。
         """
         assert self._app is not None
-        reply_params = ReplyParameters(
-            message_id=message.message_id, allow_sending_without_reply=True
-        )
+        reply_params = ReplyParameters(message_id=message.message_id, allow_sending_without_reply=True)
         first_id: int | None = None
         for chunk in split_message(text):
             with contextlib.suppress(Exception):
@@ -447,7 +577,26 @@ class Gateway:
                     parse_mode=ParseMode.HTML,
                     reply_parameters=reply_params,
                     message_thread_id=message.message_thread_id,
+                    reply_markup=reply_markup if first_id is None else None,
                 )
                 if first_id is None:
                     first_id = sent.message_id
         return first_id
+
+    async def _edit(
+        self, chat_id: int, message_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None
+    ) -> bool:
+        """就地更新小石自己的訊息（HTML）；失敗（訊息過舊、內容相同等）記錄並回 False。"""
+        assert self._app is not None
+        try:
+            await self._app.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception:
+            log.warning("就地更新訊息失敗 chat_id=%s message_id=%s", chat_id, message_id, exc_info=True)
+            return False

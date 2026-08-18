@@ -144,10 +144,10 @@ def _gateway(handler: Any, *, agent_turns: int = 8, serialize: bool = True) -> t
 
     reacted: list[int] = []
 
-    async def _react(message: Any, emoji: str) -> None:
-        reacted.append(message.message_id)
+    async def _react(chat_id: int, message_id: int, emoji: str) -> None:
+        reacted.append(message_id)
 
-    async def _reply(message: Any, text: str) -> int | None:
+    async def _reply(message: Any, text: str, reply_markup: Any = None) -> int | None:
         return message.message_id + 1000
 
     def _typing(chat_id: int, thread_id: int | None) -> Any:

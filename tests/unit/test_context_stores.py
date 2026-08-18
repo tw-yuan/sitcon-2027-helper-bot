@@ -131,10 +131,10 @@ def _gateway(handler: Any) -> Gateway:
     )
     gw = Gateway(settings, groups=None, audit=_FakeAudit(), commands=None, business_handler=handler)  # type: ignore[arg-type]
 
-    async def _react(message: Any, emoji: str) -> None:
+    async def _react(chat_id: int, message_id: int, emoji: str) -> None:
         return None
 
-    async def _reply(message: Any, text: str) -> int | None:
+    async def _reply(message: Any, text: str, reply_markup: Any = None) -> int | None:
         return message.message_id + 1000  # bot 回覆的 message_id
 
     import contextlib
