@@ -68,6 +68,10 @@ async def _provider() -> PromptData:
     return PromptData(labels=["Status::Inbox", "Team::開發組"], roster_rows=[{"nickname": "Yuan"}], charter=None)
 
 
+async def _no_sleep(_delay: float) -> None:
+    return None
+
+
 def _agent(llm: LLMClient, tools: list[Tool], max_iterations: int = 8) -> tuple[Agent, None]:
     agent = Agent(
         llm=llm,
@@ -75,6 +79,7 @@ def _agent(llm: LLMClient, tools: list[Tool], max_iterations: int = 8) -> tuple[
         prompt_builder=PromptBuilder(_provider),
         thinking="high",
         max_iterations=max_iterations,
+        sleep=_no_sleep,
     )
     return agent, None
 
@@ -279,22 +284,27 @@ class FlakyLLM(LLMClient):
         return self._responses.pop(0)
 
 
-async def test_llm_retry_once_then_succeed() -> None:
-    llm = FlakyLLM([_text_resp("ok")], fail_times=1)
+async def test_llm_retry_then_succeed() -> None:
+    llm = FlakyLLM([_text_resp("ok")], fail_times=5)
     agent, _ = _agent(llm, [])
     r = await agent.handle(_req("hi"))
     assert r.reply == "ok"
-    assert llm.calls == 2  # 失敗一次後重試成功（EC-15）
+    assert llm.calls == 6  # 失敗五次後第六次成功（EC-15：最多重試五次）
 
 
 async def test_llm_unavailable_after_retries() -> None:
-    llm = FlakyLLM([], fail_times=5)
+    llm = FlakyLLM([], fail_times=10, exc=RuntimeError("Connection timed out"))
     agent, _ = _agent(llm, [])
     r = await agent.handle(_req("hi"))
     assert r.status == "error"
     assert r.error == "llm_unavailable"
     assert "稍後再試" in r.reply
-    assert llm.calls == 2  # 只重試一次
+    # 回覆附上可讓管理員辨認的診斷資訊（例外類型＋截短訊息）
+    assert "錯誤資訊" in r.reply
+    assert "RuntimeError" in r.reply
+    assert "Connection timed out" in r.reply
+    assert r.detail == {"llm_error": "RuntimeError，Connection timed out"}
+    assert llm.calls == 6  # 最多重試五次
 
 
 async def test_llm_credential_error_not_retried() -> None:

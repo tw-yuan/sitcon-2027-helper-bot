@@ -4,13 +4,15 @@
 結果回填 → 迭代，上限 max_iterations → 最終文字送出。
 
 ask_user 為終結型工具：LLM 呼叫即結束本輪，問題送出、狀態存入 pending；使用者下一則觸發續接。
-LLM 呼叫失敗重試一次（EC-15）；憑證失效回明確訊息（EC-10）；連續失敗回可行動的錯誤訊息（NFR-10）。
+LLM 呼叫失敗指數退避重試最多五次（EC-15，2026-08-18 修訂）；憑證失效回明確訊息（EC-10）；
+連續失敗回可行動的錯誤訊息並附診斷資訊供管理員辨認（NFR-10）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -46,7 +48,8 @@ ASK_USER_SPEC = ToolSpec(
 )
 
 LLM_CREDENTIAL_MESSAGE = "AI 服務憑證失效，請通知管理員。"
-LLM_UNAVAILABLE_MESSAGE = "小石暫時無法處理（AI 服務連線問題），請稍後再試；若持續發生請通知管理員。"
+LLM_UNAVAILABLE_MESSAGE = "小石暫時無法處理（AI 服務連線問題），請稍後再試；若持續發生請把下方錯誤資訊轉給管理員。"
+LLM_MAX_RETRIES = 5  # EC-15（2026-08-18 修訂）：暫時性失敗最多重試五次
 
 
 class _LLMCredentialError(RuntimeError):
@@ -54,7 +57,18 @@ class _LLMCredentialError(RuntimeError):
 
 
 class _LLMUnavailable(RuntimeError):
-    pass
+    """args[0]（若有）為給管理員辨認的診斷資訊（例外類型／HTTP 狀態／截短訊息）。"""
+
+
+def _llm_error_detail(exc: Exception) -> str:
+    parts = [type(exc).__name__]
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        parts.append(f"HTTP {status}")
+    msg = str(exc).strip()
+    if msg:
+        parts.append(msg[:200])
+    return "，".join(parts)
 
 
 @dataclass(slots=True)
@@ -112,6 +126,7 @@ class Agent:
         roster: RosterService | None = None,
         thinking: ThinkingLevel = "high",
         max_iterations: int = 8,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._llm = llm
         self._tools = tools
@@ -119,6 +134,7 @@ class Agent:
         self._roster = roster
         self._thinking = thinking
         self._max_iterations = max_iterations
+        self._sleep = sleep
 
     async def handle(self, req: AgentRequest) -> AgentResult:
         ctx = ToolContext(
@@ -154,8 +170,13 @@ class Agent:
             outcome = await self._loop(system, messages, ctx)
         except _LLMCredentialError:
             return AgentResult(reply=LLM_CREDENTIAL_MESSAGE, status="error", action="error", error="llm_credential")
-        except _LLMUnavailable:
-            return AgentResult(reply=LLM_UNAVAILABLE_MESSAGE, status="error", action="error", error="llm_unavailable")
+        except _LLMUnavailable as exc:
+            detail = str(exc)
+            reply = f"{LLM_UNAVAILABLE_MESSAGE}\n錯誤資訊：{detail}" if detail else LLM_UNAVAILABLE_MESSAGE
+            return AgentResult(
+                reply=reply, status="error", action="error", error="llm_unavailable",
+                detail={"llm_error": detail} if detail else None,
+            )
 
         detail = {"tools": outcome.tool_actions} if outcome.tool_actions else None
         if outcome.pending is not None:
@@ -214,8 +235,8 @@ class Agent:
         return [*self._tools.specs(), ASK_USER_SPEC]
 
     async def _call_llm(self, system: str, messages: list[Message]) -> LLMResponse:
-        """呼叫 LLM；失敗重試一次（EC-15），憑證/連續失敗轉為特定例外。"""
-        for attempt in range(2):
+        """呼叫 LLM；失敗指數退避重試最多五次（EC-15），憑證/連續失敗轉為特定例外（帶診斷資訊）。"""
+        for attempt in range(LLM_MAX_RETRIES + 1):
             try:
                 return await self._llm.chat(
                     system=system, messages=messages, tools=self._specs(), thinking=self._thinking
@@ -223,11 +244,15 @@ class Agent:
             except Exception as exc:
                 if _is_credential_error(exc):
                     raise _LLMCredentialError from exc
-                if attempt == 0:
-                    log.warning("LLM 呼叫失敗，重試一次：%s", exc)
+                if attempt < LLM_MAX_RETRIES:
+                    delay = 0.5 * (2**attempt)
+                    log.warning(
+                        "LLM 呼叫失敗（第 %d/%d 次重試，%.1fs 後）：%s", attempt + 1, LLM_MAX_RETRIES, delay, exc
+                    )
+                    await self._sleep(delay)
                     continue
-                log.exception("LLM 呼叫連續失敗")
-                raise _LLMUnavailable from exc
+                log.exception("LLM 呼叫連續失敗（共 %d 次）", LLM_MAX_RETRIES + 1)
+                raise _LLMUnavailable(_llm_error_detail(exc)) from exc
         raise _LLMUnavailable  # 理論上不會到達
 
     async def _loop(self, system: str, messages: list[Message], ctx: ToolContext) -> _Outcome:
