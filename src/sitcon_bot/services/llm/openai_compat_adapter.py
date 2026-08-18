@@ -21,6 +21,7 @@ from .base import (
     LLMResponse,
     Message,
     TextBlock,
+    TextStreamHandler,
     ThinkingLevel,
     ToolCall,
     ToolResultBlock,
@@ -59,6 +60,7 @@ class OpenAICompatAdapter(LLMClient):
         messages: list[Message],
         tools: list[ToolSpec],
         thinking: ThinkingLevel,
+        on_text: TextStreamHandler | None = None,
     ) -> LLMResponse:
         oai_messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         for m in messages:
@@ -88,45 +90,94 @@ class OpenAICompatAdapter(LLMClient):
             params["service_tier"] = self._service_tier
 
         started = time.monotonic()
-        resp = await self._client.chat.completions.create(**params)
+        if on_text is None:
+            resp = await self._client.chat.completions.create(**params)
+            choice = resp.choices[0]
+            content: str | None = choice.message.content
+            finish_reason: str = choice.finish_reason or ""
+            raw_usage = resp.usage
+            msg_tool_calls = [
+                (tc.id, tc.function.name, tc.function.arguments or "{}") for tc in choice.message.tool_calls or []
+            ]
+        else:
+            content, finish_reason, raw_usage, msg_tool_calls = await self._chat_streamed(params, on_text)
         latency = time.monotonic() - started
 
-        choice = resp.choices[0]
-        msg = choice.message
         tool_calls: list[ToolCall] = []
         raw_tool_calls: list[dict[str, Any]] = []
-        for tc in msg.tool_calls or []:
-            args_raw = tc.function.arguments or "{}"
+        for tc_id, tc_name, args_raw in msg_tool_calls:
             try:
                 arguments = json.loads(args_raw)
             except json.JSONDecodeError:
                 arguments = {}
-            tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=arguments))
+            tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=arguments))
             raw_tool_calls.append(
-                {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": args_raw}}
+                {"id": tc_id, "type": "function", "function": {"name": tc_name, "arguments": args_raw}}
             )
 
         usage = Usage(
-            input_tokens=getattr(resp.usage, "prompt_tokens", 0) if resp.usage else 0,
-            output_tokens=getattr(resp.usage, "completion_tokens", 0) if resp.usage else 0,
+            input_tokens=getattr(raw_usage, "prompt_tokens", 0) if raw_usage else 0,
+            output_tokens=getattr(raw_usage, "completion_tokens", 0) if raw_usage else 0,
         )
         log.info(
             "LLM openai_compat model=%s in=%d out=%d latency=%.2fs finish=%s tools=%d",
-            self._model, usage.input_tokens, usage.output_tokens, latency, choice.finish_reason, len(tool_calls),
+            self._model, usage.input_tokens, usage.output_tokens, latency, finish_reason, len(tool_calls),
         )
 
-        raw_assistant: dict[str, Any] = {"role": "assistant", "content": msg.content}
+        raw_assistant: dict[str, Any] = {"role": "assistant", "content": content}
         if raw_tool_calls:
             raw_assistant["tool_calls"] = raw_tool_calls
 
         return LLMResponse(
-            text=msg.content or None,
+            text=content or None,
             tool_calls=tool_calls,
             usage=usage,
-            stop_reason=choice.finish_reason or "",
+            stop_reason=finish_reason,
             model=self._model,
             raw_assistant=raw_assistant,
         )
+
+    async def _chat_streamed(
+        self, params: dict[str, Any], on_text: TextStreamHandler
+    ) -> tuple[str | None, str, Any, list[tuple[str, str, str]]]:
+        """串流模式：text delta 以「累積全文」回呼；tool_call 依 index 累積 arguments 片段。
+
+        回傳 (content, finish_reason, usage, tool_calls)，與非串流路徑同構。
+        stream_options.include_usage 不被部分 gateway 支援時 usage 為 None（記 0）。
+        """
+        params = {**params, "stream": True, "stream_options": {"include_usage": True}}
+        acc: list[str] = []
+        finish_reason = ""
+        raw_usage: Any = None
+        pending: dict[int, dict[str, Any]] = {}  # index → {id, name, arguments 片段}
+        stream = await self._client.chat.completions.create(**params)
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                raw_usage = chunk.usage
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            delta = choice.delta
+            if delta is None:
+                continue
+            if delta.content:
+                acc.append(delta.content)
+                await on_text("".join(acc))
+            for tc in delta.tool_calls or []:
+                slot = pending.setdefault(tc.index, {"id": "", "name": "", "arguments": []})
+                if tc.id:
+                    slot["id"] = tc.id
+                if tc.function and tc.function.name:
+                    slot["name"] = tc.function.name
+                if tc.function and tc.function.arguments:
+                    slot["arguments"].append(tc.function.arguments)
+        tool_calls = [
+            (slot["id"], slot["name"], "".join(slot["arguments"]) or "{}")
+            for _, slot in sorted(pending.items())
+        ]
+        return "".join(acc) or None, finish_reason, raw_usage, tool_calls
 
     @staticmethod
     def _to_messages(m: Message) -> list[dict[str, Any]]:

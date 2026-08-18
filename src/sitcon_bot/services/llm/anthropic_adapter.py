@@ -17,6 +17,7 @@ from .base import (
     LLMResponse,
     Message,
     TextBlock,
+    TextStreamHandler,
     ThinkingLevel,
     ToolCall,
     ToolResultBlock,
@@ -61,6 +62,7 @@ class AnthropicAdapter(LLMClient):
         messages: list[Message],
         tools: list[ToolSpec],
         thinking: ThinkingLevel,
+        on_text: TextStreamHandler | None = None,
     ) -> LLMResponse:
         params: dict[str, Any] = {
             "model": self._model,
@@ -80,7 +82,17 @@ class AnthropicAdapter(LLMClient):
             params["output_config"] = {"effort": thinking}
 
         started = time.monotonic()
-        resp = await self._client.messages.create(**params)
+        if on_text is None:
+            resp = await self._client.messages.create(**params)
+        else:
+            # 串流模式：text delta 以「累積全文」回呼（gateway 節流送 Telegram 草稿），
+            # 最終仍取完整 message，後續解析與非串流路徑完全相同。
+            async with self._client.messages.stream(**params) as stream:
+                acc: list[str] = []
+                async for delta in stream.text_stream:
+                    acc.append(delta)
+                    await on_text("".join(acc))
+                resp = await stream.get_final_message()
         latency = time.monotonic() - started
 
         text_parts: list[str] = []

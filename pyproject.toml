@@ -8,7 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     # Telegram（async long polling、forum topics）
     # rate-limiter extra：並行處理後同群送訊變密集，靠 AIORateLimiter 對 429 自動退避重試
-    "python-telegram-bot[rate-limiter]>=21,<22",
+    "python-telegram-bot[rate-limiter]>=22,<23",
     # GitLab REST v4
     "python-gitlab>=4,<5",
     # Google Drive v3 + Sheets v4（service account）

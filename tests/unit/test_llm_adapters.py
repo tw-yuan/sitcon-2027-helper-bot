@@ -233,3 +233,110 @@ def test_factory_anthropic_passes_base_url() -> None:
     client = build_llm_client(settings)
     assert isinstance(client, AnthropicAdapter)
     assert str(client._client.base_url).rstrip("/") == "https://ai.kot.gg"
+
+
+# ------------------------------------------------------------------ #
+# 串流（on_text）：Telegram 草稿即時預覽用
+# ------------------------------------------------------------------ #
+class FakeAnthropicStream:
+    """messages.stream() 的假件：text_stream 逐段吐 delta，get_final_message 回完整回應。"""
+
+    def __init__(self, deltas: list[str], final: Any) -> None:
+        self._deltas = deltas
+        self._final = final
+
+    async def __aenter__(self) -> FakeAnthropicStream:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+    @property
+    def text_stream(self) -> Any:
+        async def gen() -> Any:
+            for d in self._deltas:
+                yield d
+
+        return gen()
+
+    async def get_final_message(self) -> Any:
+        return self._final
+
+
+async def test_anthropic_streaming_accumulates_and_parses_final() -> None:
+    final = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="好喔")],
+        usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+        stop_reason="end_turn",
+    )
+    client = SimpleNamespace(
+        messages=SimpleNamespace(stream=lambda **params: FakeAnthropicStream(["好", "喔"], final))
+    )
+    adapter = AnthropicAdapter(api_key="x", model="m", client=client)
+    seen: list[str] = []
+
+    async def on_text(t: str) -> None:
+        seen.append(t)
+
+    r = await adapter.chat(
+        system="s", messages=[Message("user", [TextBlock("hi")])], tools=[], thinking="off", on_text=on_text
+    )
+    assert seen == ["好", "好喔"]  # 每段 delta 以累積全文回呼
+    assert r.text == "好喔"
+    assert r.stop_reason == "end_turn"
+
+
+def _oai_chunk(content: str | None = None, tool: Any = None, finish: str | None = None, usage: Any = None) -> Any:
+    delta = SimpleNamespace(content=content, tool_calls=[tool] if tool else None)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish)
+    return SimpleNamespace(choices=[choice], usage=usage)
+
+
+class _FakeAsyncIter:
+    def __init__(self, items: list[Any]) -> None:
+        self._items = list(items)
+
+    def __aiter__(self) -> _FakeAsyncIter:
+        return self
+
+    async def __anext__(self) -> Any:
+        if not self._items:
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+
+async def test_openai_streaming_accumulates_text_and_tool_calls() -> None:
+    chunks = [
+        _oai_chunk(content="我來"),
+        _oai_chunk(content="開卡"),
+        _oai_chunk(
+            tool=SimpleNamespace(
+                index=0, id="tc1", function=SimpleNamespace(name="gitlab_create_issue", arguments='{"title": "官')
+            )
+        ),
+        _oai_chunk(tool=SimpleNamespace(index=0, id=None, function=SimpleNamespace(name=None, arguments='網"}'))),
+        _oai_chunk(finish="tool_calls", usage=SimpleNamespace(prompt_tokens=9, completion_tokens=4)),
+    ]
+    captured: dict[str, Any] = {}
+
+    async def _create(**params: Any) -> Any:
+        captured.update(params)
+        return _FakeAsyncIter(chunks)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    adapter = OpenAICompatAdapter(api_key="x", model="m", client=client)
+    seen: list[str] = []
+
+    async def on_text(t: str) -> None:
+        seen.append(t)
+
+    r = await adapter.chat(
+        system="s", messages=[Message("user", [TextBlock("開卡")])], tools=TOOLS, thinking="off", on_text=on_text
+    )
+    assert captured["stream"] is True
+    assert seen == ["我來", "我來開卡"]
+    assert r.text == "我來開卡"
+    assert r.stop_reason == "tool_calls"
+    assert r.tool_calls[0].arguments == {"title": "官網"}  # arguments 片段跨 chunk 累積
+    assert r.usage.input_tokens == 9
+    assert r.raw_assistant["tool_calls"][0]["function"]["name"] == "gitlab_create_issue"

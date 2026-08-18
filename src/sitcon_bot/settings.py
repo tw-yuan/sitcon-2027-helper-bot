@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     serialize_per_chat: bool = True
 
     # --- 其他 ---
+    # 以 Telegram sendMessageDraft 串流部分回覆（Bot API 9.5+ 的打字動畫草稿預覽）。
+    # 草稿為暫時預覽，最終回覆仍以正式訊息送出；不支援的環境會自動停用（不影響回覆）。
+    stream_draft_replies: bool = True
     team_charter_path: str = "role.md"  # 職掌文件（RO-8）；供 LLM 判斷組別；/reload 重載
     knowledge_path: str = "config/knowledge.md"  # 背景知識（會議室代碼等內部常識）；/reload 重載
     tz: str = "Asia/Taipei"

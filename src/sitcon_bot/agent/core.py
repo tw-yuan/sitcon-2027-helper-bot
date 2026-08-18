@@ -84,6 +84,9 @@ class AgentRequest:
     resume: Pending | None = None
     history: list[Message] | None = None
     reply_context: str | None = None
+    # 串流回呼：LLM 每產生一段文字即以累積全文呼叫（gateway 以 Telegram 草稿即時預覽）。
+    # 工具回合的前導文字也會串流——最終回覆仍以 AgentResult.reply 為準。
+    on_partial: Callable[[str], Awaitable[None]] | None = None
 
 
 @dataclass(slots=True)
@@ -167,7 +170,7 @@ class Agent:
             messages = [Message("user", blocks)]
 
         try:
-            outcome = await self._loop(system, messages, ctx)
+            outcome = await self._loop(system, messages, ctx, on_partial=req.on_partial)
         except _LLMCredentialError:
             return AgentResult(reply=LLM_CREDENTIAL_MESSAGE, status="error", action="error", error="llm_credential")
         except _LLMUnavailable as exc:
@@ -234,12 +237,19 @@ class Agent:
     def _specs(self) -> list[ToolSpec]:
         return [*self._tools.specs(), ASK_USER_SPEC]
 
-    async def _call_llm(self, system: str, messages: list[Message]) -> LLMResponse:
+    async def _call_llm(
+        self,
+        system: str,
+        messages: list[Message],
+        on_partial: Callable[[str], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
         """呼叫 LLM；失敗指數退避重試最多五次（EC-15），憑證/連續失敗轉為特定例外（帶診斷資訊）。"""
+        # on_text 僅在有串流回呼時傳入，讓不認識該參數的 LLMClient 替身／舊實作維持可用
+        extra: dict[str, Any] = {"on_text": on_partial} if on_partial is not None else {}
         for attempt in range(LLM_MAX_RETRIES + 1):
             try:
                 return await self._llm.chat(
-                    system=system, messages=messages, tools=self._specs(), thinking=self._thinking
+                    system=system, messages=messages, tools=self._specs(), thinking=self._thinking, **extra
                 )
             except Exception as exc:
                 if _is_credential_error(exc):
@@ -255,10 +265,16 @@ class Agent:
                 raise _LLMUnavailable(_llm_error_detail(exc)) from exc
         raise _LLMUnavailable  # 理論上不會到達
 
-    async def _loop(self, system: str, messages: list[Message], ctx: ToolContext) -> _Outcome:
+    async def _loop(
+        self,
+        system: str,
+        messages: list[Message],
+        ctx: ToolContext,
+        on_partial: Callable[[str], Awaitable[None]] | None = None,
+    ) -> _Outcome:
         actions: list[str] = []
         for _ in range(self._max_iterations):
-            resp = await self._call_llm(system, messages)
+            resp = await self._call_llm(system, messages, on_partial=on_partial)
             if not resp.tool_calls:
                 # 完整 transcript（含最終 assistant 訊息與 raw thinking）交回，供「回覆此則」續接
                 history = [*messages, resp.assistant_message()]

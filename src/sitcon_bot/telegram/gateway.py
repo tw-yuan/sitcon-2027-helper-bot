@@ -67,6 +67,10 @@ REACT_RECEIVED = "👀"
 REACT_DONE = "✅"
 GENERIC_ERROR = "小石遇到未預期的錯誤，請稍後再試或通知管理員。"
 
+# 串流草稿（Bot API 9.5+ sendMessageDraft）：LLM 生成期間即時預覽部分回覆，同 draft_id 有打字動畫。
+DRAFT_INTERVAL = 1.5  # 秒；節流草稿更新頻率，避免撞 Telegram 速率限制
+DRAFT_MAX_CHARS = 4096  # sendMessageDraft 的 text 上限
+
 # LLM 服務出問題時的錯誤回覆掛「重試」按鈕：按下即以原始請求重跑，並就地更新該則錯誤訊息。
 RETRY_PREFIX = "retry:"
 RETRY_BUTTON_TEXT = "🔄 重試"
@@ -119,6 +123,43 @@ class BusinessRequest:
     resume: Any = None
     history: Any = None
     reply_context: str | None = None
+    # 串流回呼（gateway 於回合開跑前填入 _DraftStreamer）；agent 以累積全文呼叫
+    on_partial: Any = None
+
+
+class _DraftStreamer:
+    """節流地以 sendMessageDraft 串流部分回覆（同 draft_id 更新會有打字動畫）。
+
+    草稿是暫時預覽（約 30 秒），最終回覆仍由正式訊息送出並取代之。
+    任一失敗即停用本回合串流（環境不支援等），完全不影響正式回覆。
+    """
+
+    def __init__(self, bot: Any, chat_id: int, thread_id: int | None, draft_id: int) -> None:
+        self._bot = bot
+        self._chat_id = chat_id
+        self._thread_id = thread_id
+        self._draft_id = draft_id
+        self._last = 0.0
+        self._disabled = False
+
+    async def __call__(self, text: str) -> None:
+        if self._disabled or not text:
+            return
+        now = asyncio.get_running_loop().time()
+        if now - self._last < DRAFT_INTERVAL:
+            return
+        self._last = now
+        try:
+            # 草稿以純文字送出（不帶 parse_mode——串流中的半截標記會壞）；逾長取尾端維持動態
+            await self._bot.send_message_draft(
+                chat_id=self._chat_id,
+                draft_id=self._draft_id,
+                text=text[-DRAFT_MAX_CHARS:],
+                message_thread_id=self._thread_id,
+            )
+        except Exception as exc:
+            self._disabled = True
+            log.info("串流草稿不可用，本回合停用 chat_id=%s：%s", self._chat_id, exc)
 
 
 @dataclass(slots=True)
@@ -346,6 +387,12 @@ class Gateway:
         await self._finalize(req, result, reply_mid)
 
     async def _run_business(self, req: BusinessRequest) -> BusinessResult:
+        # 串流草稿：每回合（含重試）配一個新 streamer；停用或不支援時為 None（agent 即不串流）
+        req.on_partial = (
+            _DraftStreamer(self._app.bot, req.chat_id, req.thread_id, req.trigger_message_id)
+            if self._settings.stream_draft_replies and self._app is not None
+            else None
+        )
         # typing 包在鎖外：排隊等前一則跑完的期間也持續顯示「輸入中」。
         async with self._typing(req.chat_id, req.thread_id):
             # 同一對話序列化 → 同群回覆保持順序；再取全域額度擋突發流量。

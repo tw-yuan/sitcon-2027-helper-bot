@@ -418,3 +418,43 @@ async def test_requester_note_unknown_user_asks_for_username() -> None:
     await _agent_with_roster(llm, roster).handle(_req("指派給我"))  # user_id=7 不在名冊
     joined = "\n".join(_first_user_texts(llm))
     assert "查無" in joined and "GitLab username" in joined
+
+
+# ------------------------------------------------------------------ #
+# 串流：on_partial 一路傳到 LLM 呼叫（Telegram 草稿即時預覽）
+# ------------------------------------------------------------------ #
+async def test_on_partial_plumbed_to_llm_as_on_text() -> None:
+    class StreamingLLM(LLMClient):
+        async def chat(
+            self,
+            *,
+            system: str,
+            messages: list[Message],
+            tools: list[ToolSpec],
+            thinking: ThinkingLevel,
+            on_text: Any = None,
+        ) -> LLMResponse:
+            assert on_text is not None
+            await on_text("卡")
+            await on_text("卡片已建立")
+            return _text_resp("卡片已建立")
+
+    seen: list[str] = []
+
+    async def on_partial(t: str) -> None:
+        seen.append(t)
+
+    agent, _ = _agent(StreamingLLM(), [])
+    req = _req("hi")
+    req.on_partial = on_partial
+    r = await agent.handle(req)
+    assert seen == ["卡", "卡片已建立"]
+    assert r.reply == "卡片已建立"
+
+
+async def test_no_on_partial_keeps_legacy_chat_signature() -> None:
+    # 未串流時不得傳 on_text——不認識該參數的 LLMClient 替身／舊實作必須維持可用
+    llm = ScriptedLLM([_text_resp("好")])
+    agent, _ = _agent(llm, [])
+    r = await agent.handle(_req("hi"))
+    assert r.reply == "好"

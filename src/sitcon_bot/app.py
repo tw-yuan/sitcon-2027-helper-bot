@@ -273,6 +273,7 @@ async def run(settings: Settings) -> None:
                 resume=req.resume,
                 history=req.history,
                 reply_context=req.reply_context,
+                on_partial=req.on_partial,
             )
         )
         return BusinessResult(

@@ -13,10 +13,15 @@ thinking 分級對映：延續 SPEC 的 off/low/medium/high，統一走「adapti
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 ThinkingLevel = Literal["off", "low", "medium", "high", "xhigh", "max"]
+
+# 串流回呼：每收到一段文字 delta 即以「累積至今的完整文字」呼叫（供 Telegram 草稿即時預覽）。
+# 呼叫端（gateway）自行節流與吞錯——handler 不得讓例外外洩中斷 LLM 呼叫。
+TextStreamHandler = Callable[[str], Awaitable[None]]
 
 # 每次 LLM 呼叫的輸出上限（含 thinking）；非串流下需低於 SDK 逾時保護門檻。
 DEFAULT_MAX_TOKENS = 16000
@@ -108,6 +113,7 @@ class LLMClient(ABC):
         messages: list[Message],
         tools: list[ToolSpec],
         thinking: ThinkingLevel,
+        on_text: TextStreamHandler | None = None,
     ) -> LLMResponse: ...
 
 
