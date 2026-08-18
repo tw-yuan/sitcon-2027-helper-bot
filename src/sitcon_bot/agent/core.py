@@ -198,7 +198,7 @@ class Agent:
         """把「當前發話者」的名冊身分注入本則訊息，讓「我／幫我／指派給我」可自動解析（RO-5）。
 
         以 telegram_id 精確反查名冊；查到就直接給出 gitlab_id 等平台身分，LLM 不必反問。
-        僅使用白名單欄位（RO-2），不含 email／電話／匯款／本名。
+        此注記只放指派所需欄位；名冊完整欄位（含 email／github）在 system prompt 對照表中。
         """
         ident = f"telegram_id={ctx.user_id}"
         if ctx.username:

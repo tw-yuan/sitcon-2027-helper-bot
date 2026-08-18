@@ -228,12 +228,12 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 ### 10.1 名冊（Google Sheet）
 
 - **RO-1** 資料來源：`.env` 指定之 Sheet ID＋分頁（gid）。僅讀取該一個分頁。
-- **RO-2** 【硬性・個資隔離】僅擷取下列欄位（以表頭字串比對）：`nickname`、`gitlab_username`、`gitlab_id`、`telegram_username`、`telegram_id`、`role`、`position`、`other_role`。**其餘欄位（含 `email`、`github_*`）於載入層即丟棄，任何情況下不得進入記憶體資料結構、LLM context、日誌或回覆。** 含本名、電話、匯款帳號等個資之其他分頁永不讀取。此限制在程式層強制並有專屬測試。
+- **RO-2** 【2026-08-18 修訂，客戶指示】讀取 bot_use 分頁（gid 1822407485）之**完整欄位**：`email`、`github_username`、`github_id`、`gitlab_username`、`gitlab_id`、`telegram_username`、`telegram_id`、`nickname`、`role`、`position`、`other_role`，不做限制。解析仍以上述已知表頭清單比對，清單以外之未知欄位（如本名、電話、匯款帳號，若未來出現於分頁）於載入層丟棄。含個資之**其他分頁**仍永不讀取（RO-1）。〔原條文為 8 欄白名單、email/github 於載入層丟棄；修訂前歷史見 git〕
 - **RO-3** 正規化：`telegram_username` 去除前導 `@`、統一小寫；空白列與缺 `gitlab_id` 之列跳過並記入啟動日誌。
 - **RO-4** 組長判定 = `position == "組長"` 且 `role == <組名>`；總召判定 = `position == "總召"`。某組查無組長時，該組的自動 assign 退回 GL-3 之總召 fallback。
 - **RO-5** 人名解析：使用者提及的人名依序比對 `nickname`（不分大小寫、容忍部分符合）、`gitlab_username`、`telegram_username`；命中多人依 TRIG-7 反問；查無此人時回覆並建議直接給 GitLab username。
 - **RO-6** 名冊快取 TTL 60 分鐘；`/reload` 強制刷新。
-- **RO-7** 名冊供 LLM 使用時，僅注入 RO-2 白名單欄位組成的精簡對照表。
+- **RO-7** 【2026-08-18 修訂】名冊供 LLM 使用時，注入 RO-2 所列完整欄位組成的對照表（含 email、github_*）。
 
 ### 10.2 職掌文件
 

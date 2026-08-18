@@ -1,9 +1,9 @@
 """名冊載入（RO-1～RO-8）。
 
-【硬性・個資隔離 RO-2】：僅擷取白名單欄位（以表頭字串比對）；其餘欄位（含 email、
-github_*、本名、電話、匯款帳號…）於**載入層即丟棄**，永不進入記憶體結構、LLM context、
-日誌或回覆。此限制以「白名單解析 + 僅含白名單欄位的 frozen dataclass」在程式層強制，
-並有專屬測試（NFR-5）。
+【RO-2 修訂（2026-08-18 客戶指示）】：載入 bot_use 分頁（gid 1822407485）的**完整欄位**，
+含 email、github_username、github_id——不再於載入層排除。解析仍以已知表頭清單比對
+（LOADED_HEADERS），清單以外的未知欄位（如本名、電話、匯款帳號等，若未來被加進分頁）
+仍會被丟棄——frozen dataclass 結構上只裝得下已知欄位。
 
 分工：
   parse_roster(...)         純函式，強制 RO-2/RO-3，最易測。
@@ -25,18 +25,21 @@ from .google_http import GOOGLE_NUM_RETRIES, build_google_service, request_http
 
 log = logging.getLogger(__name__)
 
-# RO-2 白名單：只有這些表頭對應的欄位會被載入，其餘一律丟棄。
-WHITELIST_HEADERS: tuple[str, ...] = (
-    "nickname",
+# 載入欄位清單（RO-2 修訂 2026-08-18）：bot_use 分頁的完整表頭；不在清單的未知欄位仍丟棄。
+LOADED_HEADERS: tuple[str, ...] = (
+    "email",
+    "github_username",
+    "github_id",
     "gitlab_username",
     "gitlab_id",
     "telegram_username",
     "telegram_id",
+    "nickname",
     "role",
     "position",
     "other_role",
 )
-_WHITELIST_SET = frozenset(WHITELIST_HEADERS)
+_LOADED_SET = frozenset(LOADED_HEADERS)
 
 POSITION_LEADER = "組長"
 POSITION_CHIEF = "總召"
@@ -48,10 +51,13 @@ class RosterUnavailableError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class Member:
-    """名冊成員——**只有 RO-2 白名單欄位**，結構上無法承載其他個資。"""
+    """名冊成員——bot_use 分頁的完整欄位（RO-2 修訂 2026-08-18）；未知欄位結構上裝不下。"""
 
     gitlab_id: int
     nickname: str | None = None
+    email: str | None = None
+    github_username: str | None = None
+    github_id: int | None = None
     gitlab_username: str | None = None
     telegram_username: str | None = None
     telegram_id: int | None = None
@@ -88,16 +94,16 @@ def _norm_team(name: str | None) -> str:
 
 
 def parse_roster(header: list[str], rows: list[list[str]]) -> RosterParseResult:
-    """把原始表格解析為 Member 清單，強制 RO-2 白名單與 RO-3 正規化。
+    """把原始表格解析為 Member 清單（完整欄位，RO-2 修訂）與 RO-3 正規化。
 
-    - 僅讀取白名單表頭對應的欄位（比對時去空白、不分大小寫）。
+    - 讀取 LOADED_HEADERS 對應的欄位（比對時去空白、不分大小寫）；未知表頭丟棄。
     - telegram_username 去前導 @ 並轉小寫。
     - 空白列、缺（或非數字）gitlab_id 之列跳過並計入 skipped（供啟動日誌）。
     """
     col: dict[str, int] = {}
     for i, h in enumerate(header):
         key = (h or "").strip().lower()
-        if key in _WHITELIST_SET and key not in col:
+        if key in _LOADED_SET and key not in col:
             col[key] = i
 
     members: list[Member] = []
@@ -113,7 +119,7 @@ def parse_roster(header: list[str], rows: list[list[str]]) -> RosterParseResult:
             return (row[j] or "").strip()
 
         # 完全空白列：靜默跳過
-        if not any(cell(w) for w in WHITELIST_HEADERS):
+        if not any(cell(w) for w in LOADED_HEADERS):
             continue
 
         gitlab_id = _to_int(cell("gitlab_id"))
@@ -127,6 +133,9 @@ def parse_roster(header: list[str], rows: list[list[str]]) -> RosterParseResult:
             Member(
                 gitlab_id=gitlab_id,
                 nickname=cell("nickname") or None,
+                email=cell("email") or None,
+                github_username=cell("github_username") or None,
+                github_id=_to_int(cell("github_id")),
                 gitlab_username=cell("gitlab_username") or None,
                 telegram_username=tg_username,
                 telegram_id=_to_int(cell("telegram_id")),
@@ -188,7 +197,7 @@ class Roster:
         return hits
 
     def to_llm_rows(self) -> list[dict[str, object]]:
-        """RO-7：供 LLM 使用的精簡對照表，僅含白名單欄位。"""
+        """RO-7（2026-08-18 修訂）：供 LLM 使用的名冊對照表，含完整欄位（email、github_* 等）。"""
         return [asdict(m) for m in self._members]
 
 

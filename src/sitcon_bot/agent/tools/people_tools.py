@@ -1,7 +1,7 @@
 """人名解析工具（RO-5）。把使用者提及的人名對應到名冊成員的 gitlab_id，供指派使用。
 
 命中多人時列出候選（LLM 依 TRIG-7 反問）；查無此人時建議直接給 GitLab username。
-僅回傳 RO-2 白名單欄位。
+（名冊完整欄位已在 system prompt 對照表中，此工具只回指派所需的識別欄位。）
 """
 
 from __future__ import annotations

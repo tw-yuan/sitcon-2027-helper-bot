@@ -31,19 +31,23 @@ CTX = ToolContext(chat_id=-1, thread_id=None, user_id=7, username="yuan", text="
 
 _GDOC = "application/vnd.google-apps.document"
 
-SENSITIVE = ["yuan@example.com", "0912345678", "1234-5678-9012", "王小元"]
+# RO-2 修訂（2026-08-18 客戶指示）：bot_use 完整欄位（含 email／github_*）進入 LLM context；
+# 只有載入清單外的未知欄位（本名、電話、匯款帳號…）仍不得外洩。
+SENSITIVE = ["0912345678", "1234-5678-9012", "王小元"]
 FULL_HEADER = [
-    "nickname", "gitlab_username", "gitlab_id", "telegram_username", "telegram_id", "role", "position",
-    "other_role", "email", "電話", "匯款帳號", "本名",
+    "email", "github_username", "github_id", "gitlab_username", "gitlab_id",
+    "telegram_username", "telegram_id", "nickname", "role", "position",
+    "other_role", "電話", "匯款帳號", "本名",
 ]
 ROW = [
-    "Yuan", "yuan_tw", "1001", "@yuan", "1", "開發組", "組長", "",
-    "yuan@example.com", "0912345678", "1234-5678-9012", "王小元",
+    "yuan@example.com", "yuan-gh", "778899", "yuan_tw", "1001", "@yuan", "1",
+    "Yuan", "開發組", "組長", "",
+    "0912345678", "1234-5678-9012", "王小元",
 ]
 
 
-# ---- (a) 名冊白名單外欄位不外洩（RO-2）----
-async def test_a_roster_whitelist_never_reaches_llm_context() -> None:
+# ---- (a) 名冊：完整欄位進 context、載入清單外欄位不外洩（RO-2 修訂）----
+async def test_a_roster_unknown_columns_never_reach_llm_context() -> None:
     roster = Roster(parse_roster(FULL_HEADER, [ROW]).members)
 
     async def provider() -> PromptData:
@@ -51,8 +55,10 @@ async def test_a_roster_whitelist_never_reaches_llm_context() -> None:
 
     prompt = await PromptBuilder(provider).build()
     blob = prompt + json.dumps(roster.to_llm_rows(), ensure_ascii=False)
+    assert "yuan@example.com" in blob  # email 現在應進入 LLM context
+    assert "yuan-gh" in blob
     for secret in SENSITIVE:
-        assert secret not in blob, f"個資 {secret} 進入 LLM context"
+        assert secret not in blob, f"載入清單外欄位 {secret} 進入 LLM context"
 
 
 # ---- (b) 不得建立新 label（GL-10）----

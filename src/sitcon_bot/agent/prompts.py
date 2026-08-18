@@ -1,8 +1,8 @@
 """System prompt 組裝（AGENTS 4.2）。
 
-依序注入：人設 → 行為規則 → 文件搜尋規則 → 今日日期/時區 → label 白名單 → 名冊精簡表
-（僅 RO-2 白名單欄位）→ 職掌文件（存在時）→ 背景知識（存在時）。外部系統取回的內容由
-工具結果以 <external_data> 標記注入（NFR-6），不在此處組裝。
+依序注入：人設 → 行為規則 → 文件搜尋規則 → 今日日期/時區 → label 白名單 → 名冊對照表
+（完整欄位，RO-2 修訂 2026-08-18）→ 職掌文件（存在時）→ 背景知識（存在時）。外部系統
+取回的內容由工具結果以 <external_data> 標記注入（NFR-6），不在此處組裝。
 
 DOC_SEARCH 同時承擔一項硬性限制（2026-08-03 修訂）：路徑含「（私）」的 Drive 檔案內容只供 LLM
 判斷相關性，不得寫給使用者；其餘檔案內容可正常引用（程式層保證範圍、唯讀與私／非私標示，
@@ -163,7 +163,7 @@ def _roster_section(rows: list[dict[str, object]], available: bool) -> str:
     if not rows:
         return "名冊：（空）"
     return (
-        "名冊（僅供人名解析與組長/總召指派；欄位已限縮）：\n"
+        "名冊（完整欄位，含 email／github；供人名解析、組長/總召指派與成員資訊查詢）：\n"
         + json.dumps(rows, ensure_ascii=False)
     )
 

@@ -1,4 +1,4 @@
-"""T4：名冊載入、RO-2 個資白名單、正規化、組長/總召判定、快取與 EC-11。"""
+"""T4：名冊載入、完整欄位（RO-2 修訂 2026-08-18）、正規化、組長/總召判定、快取與 EC-11。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import pytest
 
 from sitcon_bot.services.sheets_roster import (
-    WHITELIST_HEADERS,
+    LOADED_HEADERS,
     Member,
     Roster,
     RosterService,
@@ -16,53 +16,59 @@ from sitcon_bot.services.sheets_roster import (
     parse_roster,
 )
 
-# 含大量白名單「以外」欄位的假表頭（email、github、本名、電話、匯款帳號…）
+# bot_use 分頁完整表頭（RO-2 修訂：全數載入）＋清單外的未知欄位（本名、電話、匯款帳號…仍丟棄）
 FULL_HEADER = [
-    "nickname",
+    "email",
+    "github_username",
+    "github_id",
     "gitlab_username",
     "gitlab_id",
     "telegram_username",
     "telegram_id",
+    "nickname",
     "role",
     "position",
     "other_role",
-    "email",
-    "github_handle",
     "本名",
     "電話",
     "匯款帳號",
 ]
 
-SENSITIVE_VALUES = ["yuan@example.com", "yuan-gh", "王小元", "0912345678", "1234-5678-9012"]
+# 清單外欄位的值：即使出現在表格，也不得進入任何序列化形式
+UNKNOWN_COLUMN_VALUES = ["王小元", "0912345678", "1234-5678-9012"]
 
 
 def _leader_row() -> list[str]:
     return [
-        "Yuan", "yuan_tw", "1001", "@Yuan_TW", "555001", "開發組", "組長", "",
-        "yuan@example.com", "yuan-gh", "王小元", "0912345678", "1234-5678-9012",
+        "yuan@example.com", "yuan-gh", "778899", "yuan_tw", "1001", "@Yuan_TW", "555001",
+        "Yuan", "開發組", "組長", "",
+        "王小元", "0912345678", "1234-5678-9012",
     ]
 
 
 # ------------------------------------------------------------------ #
-# RO-2：個資白名單（安全關鍵）
+# RO-2 修訂（2026-08-18）：完整欄位載入；未知欄位仍丟棄
 # ------------------------------------------------------------------ #
-def test_member_has_only_whitelist_fields() -> None:
+def test_member_fields_match_loaded_headers() -> None:
     m = Member(gitlab_id=1)
-    assert set(dataclasses.asdict(m).keys()) == set(WHITELIST_HEADERS)
+    assert set(dataclasses.asdict(m).keys()) == set(LOADED_HEADERS)
 
 
-def test_ro2_sensitive_columns_never_loaded() -> None:
+def test_full_columns_loaded_including_email_and_github() -> None:
     result = parse_roster(FULL_HEADER, [_leader_row()])
     assert len(result.members) == 1
     m = result.members[0]
 
-    # 白名單欄位正確
     assert m.gitlab_id == 1001
     assert m.nickname == "Yuan"
     assert m.role == "開發組"
     assert m.position == "組長"
+    # RO-2 修訂：email／github 欄位完整載入
+    assert m.email == "yuan@example.com"
+    assert m.github_username == "yuan-gh"
+    assert m.github_id == 778899
 
-    # 敏感值不得出現在任何序列化形式（結構、LLM 表）
+    # 清單外的未知欄位不得出現在任何序列化形式（結構、LLM 表）
     roster = Roster(result.members)
     blobs = [
         json.dumps(dataclasses.asdict(m), ensure_ascii=False),
@@ -70,14 +76,15 @@ def test_ro2_sensitive_columns_never_loaded() -> None:
         repr(m),
     ]
     for blob in blobs:
-        for secret in SENSITIVE_VALUES:
-            assert secret not in blob, f"個資外洩：{secret} 出現在 {blob[:60]}…"
+        for value in UNKNOWN_COLUMN_VALUES:
+            assert value not in blob, f"未知欄位外洩：{value} 出現在 {blob[:60]}…"
 
 
-def test_to_llm_rows_only_whitelist_keys() -> None:
+def test_to_llm_rows_carries_full_fields() -> None:
     result = parse_roster(FULL_HEADER, [_leader_row()])
     for row in Roster(result.members).to_llm_rows():
-        assert set(row.keys()) == set(WHITELIST_HEADERS)
+        assert set(row.keys()) == set(LOADED_HEADERS)
+        assert row["email"] == "yuan@example.com"  # LLM 對照表含 email（RO-7 修訂）
 
 
 # ------------------------------------------------------------------ #
@@ -88,12 +95,31 @@ def test_ro3_telegram_username_normalized() -> None:
     assert m.telegram_username == "yuan_tw"  # 去 @、轉小寫
 
 
+def _row(
+    nickname: str = "",
+    gitlab_username: str = "",
+    gitlab_id: str = "",
+    telegram_username: str = "",
+    telegram_id: str = "",
+    role: str = "",
+    position: str = "",
+    email: str = "",
+    github_username: str = "",
+    github_id: str = "",
+) -> list[str]:
+    """依 FULL_HEADER 欄位順序組一列資料（未列參數者留空）。"""
+    return [
+        email, github_username, github_id, gitlab_username, gitlab_id,
+        telegram_username, telegram_id, nickname, role, position, "", "", "", "",
+    ]
+
+
 def test_ro3_skip_blank_and_missing_gitlab_id() -> None:
     rows = [
         _leader_row(),
-        ["", "", "", "", "", "", "", "", "", "", "", "", ""],  # 全空白
-        ["NoId", "noid", "", "@noid", "", "行政組", "組員", "", "", "", "", "", ""],  # 缺 gitlab_id
-        ["BadId", "badid", "abc", "@badid", "", "行政組", "組員", "", "", "", "", "", ""],  # 非數字
+        [""] * len(FULL_HEADER),  # 全空白
+        _row(nickname="NoId", gitlab_username="noid", telegram_username="@noid", role="行政組"),  # 缺 gitlab_id
+        _row(nickname="BadId", gitlab_username="badid", gitlab_id="abc", role="行政組"),  # 非數字
     ]
     result = parse_roster(FULL_HEADER, rows)
     assert len(result.members) == 1  # 只有 leader 列有效
@@ -106,11 +132,11 @@ def test_ro3_skip_blank_and_missing_gitlab_id() -> None:
 # ------------------------------------------------------------------ #
 def _sample_roster() -> Roster:
     rows = [
-        ["Yuan", "yuan_tw", "1001", "@yuan", "1", "開發組", "組長", "", *[""] * 5],
-        ["Leaf", "leaf", "1002", "@leaf", "2", "行政組", "組長", "", *[""] * 5],
-        ["Amy", "amy", "1003", "@amy", "3", "", "總召", "", *[""] * 5],
-        ["Bob", "bob", "1004", "@bob", "4", "", "總召", "", *[""] * 5],
-        ["Cat", "cat", "1005", "@cat", "5", "開發組", "組員", "", *[""] * 5],
+        _row("Yuan", "yuan_tw", "1001", "@yuan", "1", "開發組", "組長"),
+        _row("Leaf", "leaf", "1002", "@leaf", "2", "行政組", "組長"),
+        _row("Amy", "amy", "1003", "@amy", "3", "", "總召"),
+        _row("Bob", "bob", "1004", "@bob", "4", "", "總召"),
+        _row("Cat", "cat", "1005", "@cat", "5", "開發組", "組員"),
     ]
     return Roster(parse_roster(FULL_HEADER, rows).members)
 
