@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from ...services.calendar_client import CalendarError, CalendarEvent, CalendarService
 from .base import Tool, ToolContext
 from .external_data import wrap_external
+
+log = logging.getLogger(__name__)
 
 
 def _fmt_event(ev: CalendarEvent) -> str:
@@ -72,6 +76,8 @@ class CalendarCreateEventTool(_CalendarToolBase):
                 create_meet=args.create_meet,
             )
         except CalendarError as exc:
+            # 訊息回給 LLM 消化；原始 HttpError（含 domain/reason JSON）靠 exc_info 留在 log
+            log.warning("建立活動失敗", exc_info=True)
             return f"建立活動失敗：{exc}"
         invited = ""
         if args.attendees:
@@ -105,6 +111,7 @@ class CalendarListEventsTool(_CalendarToolBase):
         try:
             events = await self._cal.list_events(time_min=args.time_min, time_max=args.time_max, query=args.query)
         except CalendarError as exc:
+            log.warning("查詢活動失敗", exc_info=True)
             return f"查詢失敗：{exc}"
         if not events:
             return "這個區間查無活動。"
@@ -148,6 +155,7 @@ class CalendarUpdateEventTool(_CalendarToolBase):
                 meet_url=args.meet_url,
             )
         except CalendarError as exc:
+            log.warning("編輯活動失敗", exc_info=True)
             return f"編輯活動失敗：{exc}"
         return "✅ 已更新活動\n" + _fmt_event(ev)
 
@@ -169,6 +177,7 @@ class CalendarDeleteEventTool(_CalendarToolBase):
         try:
             ev = await self._cal.delete_event(args.event_id)
         except CalendarError as exc:
+            log.warning("刪除活動失敗", exc_info=True)
             return f"刪除活動失敗：{exc}"
         note = "（已通知邀請對象）" if self._cal.notifies_attendees and ev.attendees else ""
         return f"✅ 已刪除活動{note}\n" + _fmt_event(ev)

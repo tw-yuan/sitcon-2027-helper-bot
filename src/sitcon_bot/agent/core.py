@@ -275,6 +275,11 @@ class Agent:
         actions: list[str] = []
         for _ in range(self._max_iterations):
             resp = await self._call_llm(system, messages, on_partial=on_partial)
+            if resp.stop_reason == "pause_turn":
+                # server-side 工具（如 web search）長時間執行的中斷點：
+                # 原樣回填後續跑，不算一次自家工具迭代以外的特殊步驟
+                messages.append(resp.assistant_message())
+                continue
             if not resp.tool_calls:
                 # 完整 transcript（含最終 assistant 訊息與 raw thinking）交回，供「回覆此則」續接
                 history = [*messages, resp.assistant_message()]

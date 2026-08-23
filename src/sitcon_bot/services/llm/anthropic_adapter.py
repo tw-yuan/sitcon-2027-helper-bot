@@ -38,9 +38,11 @@ class AnthropicAdapter(LLMClient):
         client: Any | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         auth_bearer: bool = False,
+        web_search: bool = False,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
+        self._web_search = web_search
         if client is not None:
             self._client = client
         else:
@@ -75,6 +77,13 @@ class AnthropicAdapter(LLMClient):
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
             ]
+        if self._web_search:
+            # Server-side 工具：Anthropic 端執行，結果以 server_tool_use／web_search_tool_result
+            # 區塊出現在回應中（raw 回填即保留於歷史）。用基本版 20250305——實測本 gateway
+            # 對新版 20260209（動態過濾）轉譯不穩。搜尋中途可能回 stop_reason=pause_turn。
+            params.setdefault("tools", []).append(
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+            )
         if thinking == "off":
             params["thinking"] = {"type": "disabled"}
         else:

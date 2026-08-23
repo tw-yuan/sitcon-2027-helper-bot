@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     llm_auth_bearer: bool = False
     llm_thinking: ThinkingLevel = "high"
     llm_max_tool_iterations: int = 8
+    # anthropic 專用：掛 Anthropic server-side web search 工具（web_search_20250305，
+    # 伺服器端執行，無需自建搜尋 API）。實測 sub2api gateway 可轉譯；openai_compat 下忽略。
+    llm_web_search: bool = False
     # openai_compat 專用；留空＝不帶。Codex 的 fast mode 即 service_tier="fast"，
     # 官方 API 另有 priority／flex。不支援時 provider 會回 400，改回留空即可。
     llm_service_tier: str = ""
