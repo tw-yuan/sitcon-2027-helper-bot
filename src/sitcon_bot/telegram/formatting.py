@@ -18,6 +18,18 @@ def escape_html(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def tg_mention_html(username: str | None, telegram_id: int | None, display: str) -> str | None:
+    """組出會跳通知的 mention 片段：優先 @username，其次 tg://user?id= 點擊式連結。
+
+    兩者皆無（通知不到）回 None，由呼叫端決定退化呈現。
+    """
+    if username:
+        return f"@{escape_html(username)}"
+    if telegram_id is not None:
+        return f'<a href="tg://user?id={telegram_id}">{escape_html(display)}</a>'
+    return None
+
+
 def split_message(text: str, limit: int = SPLIT_LIMIT) -> list[str]:
     """把長訊息切成 ≤ limit 的片段，優先在換行、其次空白處斷開；絕不截斷內容。
 

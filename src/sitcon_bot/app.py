@@ -260,7 +260,9 @@ async def run(settings: Settings) -> None:
             subscriptions=SubscriptionStore(db), schedule=milestones, notifier=notifier
         )
 
-    commands = CommandHandlers(settings, groups, reload_cb=reload_cb, milestones=milestone_deps, memories=memories)
+    commands = CommandHandlers(
+        settings, groups, reload_cb=reload_cb, milestones=milestone_deps, memories=memories, roster=roster
+    )
 
     async def business_handler(req: BusinessRequest) -> BusinessResult:
         result = await agent.handle(

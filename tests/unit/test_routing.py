@@ -148,6 +148,17 @@ def test_auth_group_start_anyone() -> None:
     assert _route("group", False, True, Kind.COMMAND, "start") is Action.CMD_START
 
 
+def test_auth_group_tag_commands_anyone() -> None:
+    # /tl /ta 開放給群組所有人（非管理指令）
+    assert _route("group", False, True, Kind.COMMAND, "tl") is Action.CMD_TAG_LEADERS
+    assert _route("group", False, True, Kind.COMMAND, "ta") is Action.CMD_TAG_ALL
+
+
+def test_unauth_group_tag_commands_silent() -> None:
+    assert _route("group", False, False, Kind.COMMAND, "tl") is Action.IGNORE
+    assert _route("group", True, False, Kind.COMMAND, "ta") is Action.IGNORE
+
+
 @pytest.mark.parametrize(
     "command,expected",
     [

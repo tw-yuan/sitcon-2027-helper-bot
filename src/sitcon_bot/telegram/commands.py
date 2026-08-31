@@ -20,9 +20,16 @@ from ..services.milestone_schedule import (
     MilestoneScheduleUnavailableError,
     norm_team,
 )
+from ..services.sheets_roster import (
+    POSITION_CHIEF,
+    POSITION_LEADER,
+    Member,
+    RosterService,
+    RosterUnavailableError,
+)
 from ..settings import Settings
 from ..storage.memories import GroupMemoryStore
-from .formatting import escape_html
+from .formatting import escape_html, tg_mention_html
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +71,11 @@ HELP_TEXT = """<b>小石</b> — SITCON 2027 工作人員助理
 • 小石 你目前記得哪些事？
 • 小石 忘掉第 2 條記憶
 
+<b>快速 tag（所有人可用）</b>
+• /tl — tag 全部組長＋總召
+• /ta — tag 全體工作人員
+（都會自動略過發指令的你自己；人多時分多則送出）
+
 <b>里程碑預告（管理員設定）</b>
 每天晚上 23:00 自動預告隔天的籌備時程里程碑，並附上到期在即（隔天到期～過期一天內）的 GitLab 卡片提醒（tag assignee）。
 • /notify_on — 本群訂閱「全部組別」
@@ -83,6 +95,10 @@ _ALL_KEYWORDS = frozenset({"全部", "全部組別", "所有", "所有組別", "
 
 MILESTONE_DISABLED = "里程碑預告功能未啟用（MILESTONE_NOTIFY_ENABLED=false）。"
 MILESTONE_UNAVAILABLE = "目前讀不到籌備時程表，請稍後再試；若只是要訂閱全部組別，可直接用 /notify_on。"
+
+# /tl /ta：每則訊息的 mention 數上限（Telegram 單則訊息超過約 50 個 mention 後不再跳通知）
+TAG_BATCH_SIZE = 40
+ROSTER_UNAVAILABLE = "目前讀不到名冊，請稍後再試。"
 
 
 @dataclass(slots=True)
@@ -104,12 +120,14 @@ class CommandHandlers:
         reload_cb: ReloadCallback | None = None,
         milestones: MilestoneDeps | None = None,
         memories: GroupMemoryStore | None = None,
+        roster: RosterService | None = None,
     ) -> None:
         self._settings = settings
         self._groups = groups
         self._reload_cb = reload_cb
         self._milestones = milestones
         self._memories = memories
+        self._roster = roster
 
     async def authorize(self, chat_id: int, title: str | None) -> str:
         newly = await self._groups.authorize(chat_id, title, self._settings.telegram_admin_id)
@@ -223,6 +241,74 @@ class CommandHandlers:
         if sub is None:
             body += "\n\n（本群尚未訂閱，以上為「全部組別」的預覽；要訂閱請用 /notify_on）"
         return body
+
+    # ------------------------------------------------------------------ #
+    # 快速 tag（/tl /ta）——不經 LLM，直接從名冊組 mention
+    # ------------------------------------------------------------------ #
+    async def tag_leaders(self, sender_id: int, sender_username: str | None) -> list[str]:
+        """/tl：tag 全部組長＋總召（position 精確比對，副組長天然不在內）。"""
+        return await self._tag(
+            lambda m: m.position in (POSITION_LEADER, POSITION_CHIEF),
+            "全部組長＋總召",
+            sender_id,
+            sender_username,
+        )
+
+    async def tag_all(self, sender_id: int, sender_username: str | None) -> list[str]:
+        """/ta：tag 名冊上的全體工作人員。"""
+        return await self._tag(lambda m: True, "全體工作人員", sender_id, sender_username)
+
+    async def _tag(
+        self,
+        keep: Callable[[Member], bool],
+        label: str,
+        sender_id: int,
+        sender_username: str | None,
+    ) -> list[str]:
+        """組出分批的 tag 訊息（每批 TAG_BATCH_SIZE 個 mention）；發指令者本人一律剔除。
+
+        回傳多則待送訊息；名冊拿不到或無人可 tag 時為單則說明。
+        """
+        if self._roster is None:
+            return [ROSTER_UNAVAILABLE]
+        try:
+            roster = await self._roster.get()
+        except RosterUnavailableError:
+            return [ROSTER_UNAVAILABLE]
+
+        # 剔除自己：telegram_id 與 telegram_username 雙保險（名冊兩欄不一定都有填）
+        uname = (sender_username or "").lstrip("@").lower()
+        targets = [
+            m
+            for m in roster.members
+            if keep(m)
+            and m.telegram_id != sender_id
+            and not (uname and m.telegram_username == uname)
+        ]
+
+        mentions: list[str] = []
+        unreachable: list[str] = []
+        for m in targets:
+            display = m.nickname or m.telegram_username or m.gitlab_username or str(m.gitlab_id)
+            tagged = tg_mention_html(m.telegram_username, m.telegram_id, display)
+            if tagged is not None:
+                mentions.append(tagged)
+            else:
+                unreachable.append(display)
+
+        if not mentions and not unreachable:
+            return [f"名冊裡沒有其他可以 tag 的{label}。"]
+
+        batches = [mentions[i : i + TAG_BATCH_SIZE] for i in range(0, len(mentions), TAG_BATCH_SIZE)] or [[]]
+        messages: list[str] = []
+        for idx, batch in enumerate(batches):
+            head = f"🔔 召喚{label}：" if idx == 0 else ""
+            body = " ".join(batch)
+            messages.append("\n".join(part for part in (head, body) if part))
+        if unreachable:
+            names = "、".join(escape_html(n) for n in unreachable)
+            messages[-1] += f"\n⚠️ 名冊沒有 TG 資料，通知不到：{names}"
+        return messages
 
     def help_text(self) -> str:
         return HELP_TEXT

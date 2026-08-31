@@ -328,6 +328,16 @@ class Gateway:
             )
         elif action is Action.CMD_NOTIFY_OFF:
             await self._reply(message, await self._commands.notify_off(chat.id))
+        elif action in (Action.CMD_TAG_LEADERS, Action.CMD_TAG_ALL):
+            user = message.from_user
+            assert user is not None
+            handler = (
+                self._commands.tag_leaders
+                if action is Action.CMD_TAG_LEADERS
+                else self._commands.tag_all
+            )
+            for part in await handler(user.id, user.username):
+                await self._reply(message, part)
         elif action is Action.CMD_NOTIFY_LIST:
             await self._reply(message, await self._commands.notify_list())
         elif action is Action.CMD_NOTIFY_TEST:

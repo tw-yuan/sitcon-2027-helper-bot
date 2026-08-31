@@ -20,7 +20,7 @@ from datetime import date, timedelta
 
 from ..services.gitlab_client import Assignee, GitLabClient
 from ..services.sheets_roster import Member, RosterService
-from ..telegram.formatting import escape_html
+from ..telegram.formatting import escape_html, tg_mention_html
 
 log = logging.getLogger(__name__)
 
@@ -42,11 +42,11 @@ def _team_of(labels: list[str]) -> str:
 
 
 def mention_html(a: Assignee, member: Member | None) -> str:
-    if member is not None and member.telegram_username:
-        return f"@{escape_html(member.telegram_username)}"
-    if member is not None and member.telegram_id is not None:
+    if member is not None:
         display = member.nickname or a.name or a.username or str(member.telegram_id)
-        return f'<a href="tg://user?id={member.telegram_id}">{escape_html(display)}</a>'
+        tagged = tg_mention_html(member.telegram_username, member.telegram_id, display)
+        if tagged is not None:
+            return tagged
     display = (member.nickname if member else None) or a.name or a.username or f"gitlab#{a.id}"
     return f"{escape_html(display)}（無 TG 對應）"
 

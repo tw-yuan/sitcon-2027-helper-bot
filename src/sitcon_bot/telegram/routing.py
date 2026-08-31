@@ -34,13 +34,15 @@ class Action(Enum):
     CMD_NOTIFY_OFF = auto()
     CMD_NOTIFY_LIST = auto()
     CMD_NOTIFY_TEST = auto()
+    CMD_TAG_LEADERS = auto()  # /tl：tag 全部組長＋總召（不含副組長、不含自己）
+    CMD_TAG_ALL = auto()  # /ta：tag 全體工作人員（不含自己）
     BUSINESS = auto()  # 交給 agent 處理
 
 
 ADMIN_COMMANDS = frozenset(
     {"authorize", "revoke", "list_groups", "reload", "notify_on", "notify_off", "notify_list", "notify_test"}
 )
-PUBLIC_COMMANDS = frozenset({"help", "start"})
+PUBLIC_COMMANDS = frozenset({"help", "start", "tl", "ta"})
 
 _COMMAND_ACTION = {
     "revoke": Action.CMD_REVOKE,
@@ -52,6 +54,8 @@ _COMMAND_ACTION = {
     "notify_off": Action.CMD_NOTIFY_OFF,
     "notify_list": Action.CMD_NOTIFY_LIST,
     "notify_test": Action.CMD_NOTIFY_TEST,
+    "tl": Action.CMD_TAG_LEADERS,
+    "ta": Action.CMD_TAG_ALL,
 }
 
 
