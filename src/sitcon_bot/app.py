@@ -25,6 +25,7 @@ from .agent.tools.memory_tools import build_memory_tools
 from .agent.tools.people_tools import build_people_tools
 from .agent.tools.photo_tools import build_photo_tools
 from .agent.tools.reaction_tools import build_reaction_tools
+from .agent.tools.search_tools import build_search_tools
 from .auth.groups import GroupStore
 from .domain.templates import load_template_store
 from .notify.cards import collect_due_cards
@@ -39,6 +40,7 @@ from .services.llm.base import build_llm_client
 from .services.milestone_schedule import build_milestone_schedule_service
 from .services.photo_index import build_photo_index_service
 from .services.sheets_roster import RosterUnavailableError, build_roster_service
+from .services.web_search import build_web_search_service
 from .settings import Settings
 from .storage.audit import AuditLog
 from .storage.db import Database
@@ -111,6 +113,16 @@ async def run(settings: Settings) -> None:
         )
     else:
         log.info("Calendar（DWD）停用（GOOGLE_DWD_SUBJECT 未設定）")
+    web_search = build_web_search_service(settings)
+    if web_search is not None:
+        log.info(
+            "網路搜尋啟用：model=%s base_url=%s max_uses=%s",
+            settings.web_search_model,
+            settings.web_search_base_url or "<官方>",
+            settings.web_search_max_uses or "不限",
+        )
+    else:
+        log.info("網路搜尋停用（WEB_SEARCH_API_KEY 未設定）")
     hackmd = build_hackmd_client(settings)
     templates = await asyncio.to_thread(load_template_store)
 
@@ -178,6 +190,7 @@ async def run(settings: Settings) -> None:
                 settings.tz,
             ),
             *(build_calendar_tools(calendar) if calendar is not None else []),
+            *build_search_tools(web_search),
         ]
     )
     prompt_builder = PromptBuilder(prompt_provider, tz=settings.tz, memories_provider=memories.list_for)

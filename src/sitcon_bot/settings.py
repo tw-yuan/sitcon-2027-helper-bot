@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     # 官方 API 另有 priority／flex。不支援時 provider 會回 400，改回留空即可。
     llm_service_tier: str = ""
 
+    # --- 網路搜尋（獨立憑證，與主 LLM provider 脫鉤）---
+    # 主 LLM 只看到一個普通工具 web_search，背後另開一次 Anthropic 子呼叫，用 server-side
+    # 搜尋／抓取工具完成（services/web_search.py）。留空 API key＝不註冊工具。
+    # 這樣設計是因為 server-side 工具只有 anthropic provider 吃得到，換後端會整個失效。
+    web_search_api_key: SecretStr = SecretStr("")
+    web_search_model: str = "claude-opus-4-8"
+    web_search_base_url: str = "https://llm.rlong.me"
+    web_search_auth_bearer: bool = True  # 該 gateway 只認 Authorization: Bearer
+    web_search_max_uses: int = 0  # 0＝不限搜尋次數，由模型自行判斷（客戶指定）
+    web_search_max_content_tokens: int = 40000  # web_fetch 單頁內容上限，防大頁面吃光 token
+    web_search_country: str = "TW"  # 搜尋結果在地化（ISO 3166-1 alpha-2）
+    web_search_timeout: float = 180.0  # 子呼叫逾時（秒）；搜尋回合多時會偏慢
+
     # --- GitLab ---
     gitlab_url: str = "https://gitlab.com"
     gitlab_token: SecretStr
@@ -211,6 +224,14 @@ class Settings(BaseSettings):
             f"  併發          : updates={self.max_concurrent_updates} "
             f"agent回合={self.max_concurrent_agent_turns} "
             f"同一對話={'序列化' if self.serialize_per_chat else '並行（EC-16）'}",
+            "  網路搜尋       : "
+            + (
+                f"model={self.web_search_model}  base_url={self.web_search_base_url or '<官方>'}  "
+                f"key={mask(self.web_search_api_key)}  "
+                f"max_uses={self.web_search_max_uses or '不限'}"
+                if self.web_search_api_key.get_secret_value()
+                else "停用（WEB_SEARCH_API_KEY 未設定）"
+            ),
             f"  日誌等級       : {self.log_level}",
             "─────────────────────────────",
         ]

@@ -259,8 +259,10 @@ Telegram ──長輪詢──▶ gateway（TRIG-1 觸發過濾／授權路由�
                               │                            文件全分頁、試算表全工作表、簡報備註、表單、
                               │                            PDF／Office／Apps Script；（私）路徑內容不外流）
                               ├ hackmd_*  → HackMDClient（notes／team folders／模板）
-                              └ calendar_* → CalendarService（DWD 冒用 GOOGLE_DWD_SUBJECT；
-                                             邀請對象／既有 Meet 連結／新 Meet）
+                              ├ calendar_* → CalendarService（DWD 冒用 GOOGLE_DWD_SUBJECT；
+                              │              邀請對象／既有 Meet 連結／新 Meet）
+                              └ web_search → WebSearchService（獨立 Anthropic 憑證另開子呼叫，
+                                             掛 server-side 搜尋＋讀網頁；與主 provider 脫鉤）
    SQLite（授權清單、稽核）持久化於 volume
 ```
 

@@ -190,6 +190,16 @@ SITCON 2027 籌備團隊以三個系統協作：GitLab（任務卡片）、Googl
 - **CA-5** 刪除活動為破壞性操作：僅在使用者明確指名該活動時執行；是否通知邀請對象依 CA-2 之設定。
 - **CA-6** DWD 未在 Workspace 後台授權 scope 時，回覆可讀的設定指引訊息（不得只回原始 401）。
 
+### 8.2 網路搜尋（2026-09-11 追加需求）
+
+- **WS-1** 網路搜尋以**獨立於主 LLM 的 Anthropic 憑證**執行（`.env` 的 `WEB_SEARCH_*`）：主 LLM 只看到一般的 client-side 工具 `web_search`，工具內部另開一次 Anthropic Messages 子呼叫，在該次請求掛 server-side 的 `web_search_20250305` 與 `web_fetch_20250910`。如此搜尋能力與 `LLM_PROVIDER` 脫鉤——2026-09-10 主後端換 DeepSeek（openai_compat）後，原先掛在 anthropic adapter 上的 `LLM_WEB_SEARCH` 已等同失效，此設計即為修正。`WEB_SEARCH_API_KEY` 留空＝整組工具不註冊（比照 CA-1）。
+- **WS-2** 搜尋次數**不設上限**（`WEB_SEARCH_MAX_USES=0`＝不帶 `max_uses`），由子模型自行判斷要搜幾輪（客戶指定）。搜尋結果依 `WEB_SEARCH_COUNTRY` 在地化（現值 TW）。
+- **WS-3** 取得內容的界線：搜尋結果的 `encrypted_content` 為密文，**本系統讀不到**，只有 Anthropic 端解得開餵給子模型；本系統拿到的是子模型寫出的答案與引用（url／title／`cited_text` 至多 150 字）。需要整頁原文時由同時掛上的 `web_fetch` 取得明文，其內容長度上限為 `WEB_SEARCH_MAX_CONTENT_TOKENS`（現值 40000）。`web_fetch` 依 API 安全限制**只能抓取對話中已出現過的網址**，故工具參數 `urls` 指定的網址會寫入子呼叫的 user message 使其可讀。
+- **WS-4** 搜尋回傳的一切內容皆為不受信任的外部內容，一律以 `<external_data>` 圍欄注入（NFR-6）。
+- **WS-5** 使用時機寫在 system prompt（`agent/prompts.py` 的 `WEB_SEARCH`）：只用於**外部**資訊（其他活動、廠商與場地公開資料、行情、技術文件、新聞），SITCON 自身的卡片／共筆／雲端硬碟文件／名冊一律走既有工具，先查內部查不到才上網。回覆須附上出處網址。
+- **WS-6** 錯誤處理：伺服器端工具出錯時 API 仍回 HTTP 200，結果區塊的 `content` 由陣列變成單一錯誤物件，程式層先判型別再取值，錯誤碼併入工具結果供 LLM 判斷（EC 準則：不得當成例外）。長搜尋回 `stop_reason="pause_turn"` 時把該則 assistant 訊息**原樣**送回續跑，上限 5 次。子呼叫逾時為 `WEB_SEARCH_TIMEOUT`（現值 180 秒），失敗轉成可讀訊息而非原始例外。
+- **WS-7** 工具版本釘在基本版：新版（動態過濾）經現用 gateway 會被轉成 code_execution 且拿不到結果（2026-08-24 實測），改用官方端點才可考慮升版。費用上搜尋按次計價（每千次 10 美元），`web_fetch` 不另外收費，僅計 token。
+
 ---
 
 ## 9. 功能需求 — HackMD（單一 team）
@@ -335,6 +345,7 @@ notify_state                            -- NT-7
 | Google Calendar v3（DWD 冒用） | 行事曆 | `events.insert/patch/get/list/delete`（`conferenceDataVersion=1`、`sendUpdates` 依設定） |
 | HackMD API v1（api.hackmd.io/v1） | 筆記 | `GET /teams/:path/notes`、`POST /teams/:path/notes`、`GET /notes/:id`、`PATCH`（team note 更新）、Team Folders 相關端點（列出／建立資料夾、於資料夾內建立筆記）——實作時以官方 Swagger（api.hackmd.io/v1/docs）為準 |
 | LLM API | 語意解析與生成 | Anthropic Messages API（含 thinking）／OpenAI 相容 chat completions（含 tool calling） |
+| Anthropic Messages API（獨立憑證） | 網路搜尋 | `POST /v1/messages` 掛 server-side `web_search_20250305`／`web_fetch_20250910`（WS-1） |
 
 ---
 
