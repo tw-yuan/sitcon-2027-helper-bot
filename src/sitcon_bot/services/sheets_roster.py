@@ -43,6 +43,23 @@ _LOADED_SET = frozenset(LOADED_HEADERS)
 
 POSITION_LEADER = "組長"
 POSITION_CHIEF = "總召"
+# 「副組長」「副總召」字面上含有「組長」「總召」，判斷跨組職位時要先剔除，否則副手會被誤判為正職。
+_DEPUTY_TITLES = ("副組長", "副總召")
+
+
+def holds_leadership(member: Member) -> bool:
+    """是否為組長或總召——**含跨組兼任**；副組長／副總召不算。
+
+    主欄位 position 只記主要組別的職位，跨組兼任寫在自由文字的 other_role（實際寫法不一：
+    「行銷組組長」「行銷組 副組長」「編輯組 組員、開發組 組員」）。只看 position 會漏掉
+    在別組當組長的人——例如編輯組副組長同時是行銷組組長，行銷組因此整組沒有組長被涵蓋。
+    """
+    if member.position in (POSITION_LEADER, POSITION_CHIEF):
+        return True
+    other = member.other_role or ""
+    for deputy in _DEPUTY_TITLES:
+        other = other.replace(deputy, "")
+    return POSITION_LEADER in other or POSITION_CHIEF in other
 
 
 class RosterUnavailableError(RuntimeError):

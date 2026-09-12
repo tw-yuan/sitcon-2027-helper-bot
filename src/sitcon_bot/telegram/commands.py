@@ -21,11 +21,10 @@ from ..services.milestone_schedule import (
     norm_team,
 )
 from ..services.sheets_roster import (
-    POSITION_CHIEF,
-    POSITION_LEADER,
     Member,
     RosterService,
     RosterUnavailableError,
+    holds_leadership,
 )
 from ..settings import Settings
 from ..storage.memories import GroupMemoryStore
@@ -248,7 +247,7 @@ class CommandHandlers:
     async def tag_leaders(self, sender_id: int, sender_username: str | None) -> list[str]:
         """/tl：tag 全部組長＋總召（position 精確比對，副組長天然不在內）。"""
         return await self._tag(
-            lambda m: m.position in (POSITION_LEADER, POSITION_CHIEF),
+            holds_leadership,
             "全部組長＋總召",
             sender_id,
             sender_username,

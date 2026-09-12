@@ -52,6 +52,7 @@ def _member(
     tg_id: int | None = None,
     position: str | None = None,
     role: str | None = None,
+    other_role: str | None = None,
 ) -> Member:
     return Member(
         gitlab_id=gid,
@@ -60,6 +61,7 @@ def _member(
         telegram_id=tg_id,
         position=position,
         role=role,
+        other_role=other_role,
     )
 
 
@@ -269,3 +271,40 @@ async def test_delete_failure_does_not_break_the_command() -> None:
 
     assert len(sent) == 2
     assert bot.deleted == []
+
+
+# ------------------------------------------------------------------ #
+# 跨組兼任：主欄位不是組長，但 other_role 寫明在別組當組長
+# ------------------------------------------------------------------ #
+async def test_tl_includes_cross_team_leader(db: Database) -> None:
+    """實例：編輯組副組長同時是行銷組組長；只看 position 會讓行銷組整組沒有組長。"""
+    members = [
+        _member(1, tg_user="lead_dev", position="組長", role="開發組"),
+        _member(2, tg_user="ahliu", position="副組長", role="編輯組", other_role="行銷組組長"),
+    ]
+    out = await _handlers(db, _StubRosterService(members)).tag_leaders(999, None)
+    body = "\n".join(out)
+    assert "ahliu" in body
+    assert "lead_dev" in body
+
+
+async def test_tl_excludes_cross_team_deputy(db: Database) -> None:
+    """「行銷組 副組長」含有「組長」兩字，不得被誤判為正職組長。"""
+    members = [
+        _member(1, tg_user="lead_dev", position="組長", role="開發組"),
+        _member(2, tg_user="qiqi", position="副組長", role="活動組", other_role="行銷組 副組長"),
+    ]
+    out = await _handlers(db, _StubRosterService(members)).tag_leaders(999, None)
+    assert "qiqi" not in "\n".join(out)
+
+
+async def test_tl_ignores_cross_team_plain_members(db: Database) -> None:
+    members = [
+        _member(1, tg_user="lead_dev", position="組長", role="開發組"),
+        _member(2, tg_user="ya", position="組員", role="編輯組", other_role="行銷組 組員、活動組 組員"),
+        _member(3, tg_user="nocross", position="組員", role="行銷組", other_role="否，我沒有跨組"),
+    ]
+    out = await _handlers(db, _StubRosterService(members)).tag_leaders(999, None)
+    body = "\n".join(out)
+    assert "ya" not in body
+    assert "nocross" not in body
