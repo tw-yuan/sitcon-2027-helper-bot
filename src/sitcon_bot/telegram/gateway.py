@@ -338,6 +338,8 @@ class Gateway:
             )
             for part in await handler(user.id, user.username):
                 await self._reply(message, part)
+            # 刪掉指令訊息：/tl /ta 在群組裡是可點的連結，留著容易被誤觸而重複召喚。
+            await self._delete(chat.id, message.message_id)
         elif action is Action.CMD_NOTIFY_LIST:
             await self._reply(message, await self._commands.notify_list())
         elif action is Action.CMD_NOTIFY_TEST:
@@ -639,6 +641,23 @@ class Gateway:
                 if first_id is None:
                     first_id = sent.message_id
         return first_id
+
+    async def _delete(self, chat_id: int, message_id: int) -> bool:
+        """刪除一則訊息；失敗只記 warning，不中斷流程。
+
+        最常見的失敗原因是 bot 在該群沒有「刪除訊息」管理員權限（Telegram 回 400/403），
+        日誌訊息直接指出解法，免得管理員只看到一個原始錯誤。
+        """
+        assert self._app is not None
+        try:
+            await self._app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            return True
+        except Exception:
+            log.warning(
+                "刪除訊息失敗 chat_id=%s message_id=%s——bot 需為該群管理員並具備「刪除訊息」權限",
+                chat_id, message_id, exc_info=True,
+            )
+            return False
 
     async def _edit(
         self, chat_id: int, message_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None

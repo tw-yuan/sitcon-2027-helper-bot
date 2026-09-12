@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from sitcon_bot.auth.groups import GroupStore
 from sitcon_bot.services.sheets_roster import Member, Roster, RosterUnavailableError
 from sitcon_bot.settings import Settings
@@ -11,6 +13,8 @@ from sitcon_bot.telegram.commands import (
     TAG_BATCH_SIZE,
     CommandHandlers,
 )
+from sitcon_bot.telegram.gateway import Gateway
+from sitcon_bot.telegram.routing import Action
 
 ADMIN = 42
 
@@ -170,3 +174,98 @@ async def test_roster_unavailable(db: Database) -> None:
 async def test_roster_not_wired(db: Database) -> None:
     out = await _handlers(db, None).tag_leaders(999, None)
     assert out == [ROSTER_UNAVAILABLE]
+
+
+# ------------------------------------------------------------------ #
+# gateway：送出 tag 訊息後刪掉指令訊息（防誤觸重複召喚）
+# ------------------------------------------------------------------ #
+class _FakeGroups:
+    def is_authorized(self, chat_id: int) -> bool:
+        return True
+
+
+class _FakeAudit:
+    async def write(self, **kw: object) -> None:
+        return None
+
+
+class _FakeCommands:
+    """只提供 /tl /ta 兩個進入點，記錄收到的呼叫。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str | None]] = []
+
+    async def tag_leaders(self, sender_id: int, sender_username: str | None) -> list[str]:
+        self.calls.append((sender_id, sender_username))
+        return ["🔔 召喚全部組長＋總召：@a @b", "第二批 @c"]
+
+    async def tag_all(self, sender_id: int, sender_username: str | None) -> list[str]:
+        self.calls.append((sender_id, sender_username))
+        return ["🔔 召喚全體工作人員：@a"]
+
+
+class _DeleteRecordingBot:
+    def __init__(self, fail: bool = False) -> None:
+        self.deleted: list[tuple[int, int]] = []
+        self._fail = fail
+
+    async def delete_message(self, *, chat_id: int, message_id: int) -> None:
+        if self._fail:
+            raise RuntimeError("bot 不是管理員")
+        self.deleted.append((chat_id, message_id))
+
+
+def _tag_message() -> SimpleNamespace:
+    return SimpleNamespace(
+        chat=SimpleNamespace(id=-100, title="群"),
+        message_id=555,
+        message_thread_id=None,
+        from_user=SimpleNamespace(id=7, username="yoru"),
+    )
+
+
+def _tag_gateway(bot: _DeleteRecordingBot) -> tuple[Gateway, _FakeCommands, list[str]]:
+    commands = _FakeCommands()
+    gw = Gateway(_settings(), groups=_FakeGroups(), audit=_FakeAudit(), commands=commands)  # type: ignore[arg-type]
+    gw._app = SimpleNamespace(bot=bot)  # type: ignore[assignment]
+    sent: list[str] = []
+
+    async def _reply(message: object, text: str, reply_markup: object = None) -> int:
+        sent.append(text)
+        return 1
+
+    gw._reply = _reply  # type: ignore[assignment]
+    return gw, commands, sent
+
+
+async def test_tl_deletes_the_command_message_after_replying() -> None:
+    bot = _DeleteRecordingBot()
+    gw, commands, sent = _tag_gateway(bot)
+    message = _tag_message()
+
+    await gw._dispatch(Action.CMD_TAG_LEADERS, message, "/tl")  # type: ignore[arg-type]
+
+    assert len(sent) == 2  # 兩批照常送出
+    assert commands.calls == [(7, "yoru")]
+    assert bot.deleted == [(-100, 555)]  # 指令訊息被刪掉
+
+
+async def test_ta_deletes_the_command_message() -> None:
+    bot = _DeleteRecordingBot()
+    gw, _, sent = _tag_gateway(bot)
+
+    await gw._dispatch(Action.CMD_TAG_ALL, _tag_message(), "/ta")  # type: ignore[arg-type]
+
+    assert len(sent) == 1
+    assert bot.deleted == [(-100, 555)]
+
+
+async def test_delete_failure_does_not_break_the_command() -> None:
+    """bot 沒有「刪除訊息」權限時只記 warning，tag 訊息照常送出。"""
+    bot = _DeleteRecordingBot(fail=True)
+    gw, _, sent = _tag_gateway(bot)
+
+    await gw._dispatch(Action.CMD_TAG_LEADERS, _tag_message(), "/tl")  # type: ignore[arg-type]
+
+    assert len(sent) == 2
+    assert bot.deleted == []
