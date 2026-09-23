@@ -426,9 +426,10 @@ async def test_delete_label_tool_unknown() -> None:
 
 # ---------- Linked items（GL-27～GL-29：母卡追蹤，2026-08-14 追加需求） ----------
 def _card(iid: int, title: str, state: str = "opened", due: str | None = None,
-          labels: list[str] | None = None) -> dict[str, Any]:
+          labels: list[str] | None = None, confidential: bool = False) -> dict[str, Any]:
     return {"iid": iid, "web_url": f"https://gitlab/{iid}", "title": title, "description": None,
-            "labels": labels or [], "assignees": [], "due_date": due, "state": state}
+            "labels": labels or [], "assignees": [], "due_date": due, "state": state,
+            "confidential": confidential}
 
 
 async def test_link_tool_batch_then_honest_failures() -> None:
@@ -490,3 +491,124 @@ async def test_unlink_tool_reports_absent_separately() -> None:
     assert "✅ #10 已解除連結 1 張：#11" in reply
     assert "本來就沒有連結：#12" in reply
     assert backend.links[10] == []
+
+
+# ------------------------------------------------------------------ #
+# 機密卡（2026-09-23 客戶指示）：只有組長／副組長／總召／副召看得到
+# ------------------------------------------------------------------ #
+SECRET_TITLE = "寄送總統邀請信"
+
+
+def _roster_as(position: str | None, *, in_roster: bool = True, other_role: str | None = None) -> Roster:
+    """CTX.user_id=42 這個人在名冊中的職位；in_roster=False 代表名冊查無此人。"""
+    if not in_roster:
+        return Roster([Member(gitlab_id=9, nickname="別人", telegram_id=999, position="總召")])
+    return Roster([
+        Member(gitlab_id=1, nickname="Yuan", telegram_id=42, role="開發組",
+               position=position, other_role=other_role)
+    ])
+
+
+def _secret_backend() -> FakeBackend:
+    backend = FakeBackend()
+    backend.issues = {
+        243: _card(243, SECRET_TITLE, labels=["Team::總召組"], confidential=True),
+        244: _card(244, "一般卡", labels=["Team::總召組"]),
+    }
+    backend.issue_statuses = {243: "Inbox", 244: "Inbox"}
+    return backend
+
+
+async def test_get_confidential_denied_to_member_without_leaking_title() -> None:
+    tool = GitlabGetIssueTool(_client(_secret_backend()), FakeRosterService(_roster_as("組員")))
+    reply = await tool.run(GetIssueArgs(iid=243, include_notes=True), CTX)
+    assert "機密卡" in reply
+    assert SECRET_TITLE not in reply  # 標題一個字都不能漏
+    assert "Team::總召組" not in reply
+
+
+async def test_get_confidential_allowed_for_each_leadership_title() -> None:
+    for position in ("組長", "副組長", "總召", "副召"):
+        tool = GitlabGetIssueTool(_client(_secret_backend()), FakeRosterService(_roster_as(position)))
+        reply = await tool.run(GetIssueArgs(iid=243), CTX)
+        assert SECRET_TITLE in reply, position
+
+
+async def test_get_confidential_allowed_for_cross_team_leader() -> None:
+    """主組是組員、在別組當組長（寫在 other_role）也算——比照 /tl 的跨組兼任。"""
+    roster = _roster_as("組員", other_role="行銷組 組長")
+    tool = GitlabGetIssueTool(_client(_secret_backend()), FakeRosterService(roster))
+    assert SECRET_TITLE in await tool.run(GetIssueArgs(iid=243), CTX)
+
+
+async def test_get_confidential_denied_when_roster_unavailable_or_unknown() -> None:
+    """fail closed：名冊掛掉、或名冊查無此人，一律不顯示。"""
+    for roster_service in (FakeRosterService(None), FakeRosterService(_roster_as("組長", in_roster=False)), None):
+        tool = GitlabGetIssueTool(_client(_secret_backend()), roster_service)
+        reply = await tool.run(GetIssueArgs(iid=243), CTX)
+        assert SECRET_TITLE not in reply
+        assert "機密卡" in reply
+
+
+async def test_get_non_confidential_unaffected_for_member() -> None:
+    tool = GitlabGetIssueTool(_client(_secret_backend()), FakeRosterService(_roster_as("組員")))
+    assert "一般卡" in await tool.run(GetIssueArgs(iid=244), CTX)
+
+
+async def test_search_hides_confidential_from_member_and_says_so() -> None:
+    tool = GitlabSearchIssuesTool(_client(_secret_backend()), FakeRosterService(_roster_as("組員")))
+    reply = await tool.run(SearchIssuesArgs(label_filters=["Team::總召組"]), CTX)
+    assert SECRET_TITLE not in reply
+    assert "#243" not in reply
+    assert "共 1 張" in reply  # 機密卡在計數前就濾掉，不會說「共 2 張」卻只列 1 張
+    assert "另有 1 張機密卡未顯示" in reply
+    assert "一般卡" in reply
+
+
+async def test_search_all_hits_confidential_tells_member_nothing_more() -> None:
+    backend = _secret_backend()
+    del backend.issues[244]
+    tool = GitlabSearchIssuesTool(_client(backend), FakeRosterService(_roster_as("組員")))
+    reply = await tool.run(SearchIssuesArgs(label_filters=["Team::總召組"]), CTX)
+    assert SECRET_TITLE not in reply
+    assert "機密卡" in reply
+
+
+async def test_search_shows_confidential_to_leader() -> None:
+    tool = GitlabSearchIssuesTool(_client(_secret_backend()), FakeRosterService(_roster_as("組長")))
+    reply = await tool.run(SearchIssuesArgs(label_filters=["Team::總召組"]), CTX)
+    assert "共 2 張" in reply
+    assert SECRET_TITLE in reply
+    assert "未顯示" not in reply
+
+
+async def test_linked_confidential_card_hidden_from_member() -> None:
+    backend = FakeBackend()
+    backend.issues = {
+        10: _card(10, "母卡：總統府相關"),
+        11: _card(11, "一般子卡"),
+        12: _card(12, SECRET_TITLE, confidential=True),
+    }
+    backend.create_issue_link(10, 11, "relates_to")
+    backend.create_issue_link(10, 12, "relates_to")
+    client = _client(backend)
+
+    reply = await GitlabGetIssueTool(client, FakeRosterService(_roster_as("組員"))).run(GetIssueArgs(iid=10), CTX)
+    assert SECRET_TITLE not in reply
+    assert "Linked items 共 1 張" in reply
+    assert "另有 1 張連結卡是機密卡" in reply
+
+    reply = await GitlabGetIssueTool(client, FakeRosterService(_roster_as("總召"))).run(GetIssueArgs(iid=10), CTX)
+    assert SECRET_TITLE in reply
+    assert "Linked items 共 2 張" in reply
+
+
+async def test_write_paths_stay_open_on_confidential_cards() -> None:
+    """刻意不擋寫入：回覆不含卡片既有內容，擋了只會讓有權限的人也動不了。"""
+    backend = _secret_backend()
+    roster = FakeRosterService(_roster_as("組員"))
+    reply = await GitlabCommentIssueTool(_client(backend), roster).run(
+        CommentIssueArgs(iid=243, body="收到"), CTX
+    )
+    assert reply.startswith("✅")
+    assert SECRET_TITLE not in reply

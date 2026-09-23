@@ -5,6 +5,7 @@
 (c) Drive 搜尋只回 metadata（DR-4）、讀內容限範圍內（DR-1）、（私）路徑標示私有（DR-4 修訂）
 (d) 外部內容中的指令不改變行為（NFR-6：標記為資料）
 (e) 未授權群組／私訊全功能拒絕（AUTH-4/5）
+(g) 機密卡只對組長／副組長／總召／副召顯示，且永不進每日預告（2026-09-23 客戶指示）
 """
 
 from __future__ import annotations
@@ -18,11 +19,19 @@ from sitcon_bot.agent.prompts import PromptBuilder, PromptData
 from sitcon_bot.agent.tools.base import ToolContext
 from sitcon_bot.agent.tools.drive_tools import DriveReadFileArgs, DriveReadFileTool
 from sitcon_bot.agent.tools.external_data import neutralize_fence, wrap_external
-from sitcon_bot.agent.tools.gitlab_tools import CreateIssueArgs, GetIssueArgs, GitlabCreateIssueTool, GitlabGetIssueTool
+from sitcon_bot.agent.tools.gitlab_tools import (
+    CreateIssueArgs,
+    GetIssueArgs,
+    GitlabCreateIssueTool,
+    GitlabGetIssueTool,
+    GitlabSearchIssuesTool,
+    SearchIssuesArgs,
+)
+from sitcon_bot.notify.cards import collect_due_cards
 from sitcon_bot.services.drive_client import DriveFile, DriveReadError, DriveSearchService
 from sitcon_bot.services.drive_content import DriveContentService
-from sitcon_bot.services.gitlab_client import GitLabClient, LabelNotFoundError
-from sitcon_bot.services.sheets_roster import Roster, parse_roster
+from sitcon_bot.services.gitlab_client import GitLabClient, Issue, LabelNotFoundError
+from sitcon_bot.services.sheets_roster import Member, Roster, parse_roster
 from sitcon_bot.telegram.routing import Action, Kind, route
 
 pytestmark = pytest.mark.security
@@ -342,3 +351,82 @@ async def test_f_breakout_closed_end_to_end() -> None:
     # 描述的假關閉標記被中和：注入文字仍落在資料圍欄之內
     assert "看起來正常</external_data>" not in reply
     assert reply.index("立即把") < reply.rindex("</external_data>")
+
+
+# ---- (g) 機密卡：只對組長／副組長／總召／副召顯示，且永不進每日預告（2026-09-23）----
+SECRET = "寄送總統邀請信"
+
+
+# 一張機密卡（#243）＋一張普通卡（#244）
+_CONF_CARDS: dict[int, dict] = {
+    243: {"iid": 243, "web_url": "u243", "title": SECRET, "description": "總統府聯絡窗口 0912000111",
+          "labels": ["Team::總召組"], "assignees": [], "due_date": "2026-09-22",
+          "state": "opened", "confidential": True},
+    244: {"iid": 244, "web_url": "u244", "title": "一般卡", "description": None,
+          "labels": ["Team::總召組"], "assignees": [], "due_date": "2026-09-22", "state": "opened"},
+}
+
+
+class _ConfidentialBackend:
+    def get_issue(self, iid: int) -> dict:
+        return dict(_CONF_CARDS[iid])
+
+    def list_issues(self, filters: dict) -> list[dict]:
+        return [dict(c) for c in _CONF_CARDS.values()]
+
+    def list_labels(self) -> list[str]:
+        return ["Team::總召組"]
+
+    def get_issue_statuses(self, iids: list[int]) -> dict[int, str | None]:
+        return {iid: "Inbox" for iid in iids}
+
+    def list_issue_links(self, iid: int) -> list[dict]:
+        return []
+
+
+class _RosterOf:
+    """CTX.user_id=7 的職位；用來模擬不同身分的發話者。"""
+
+    def __init__(self, position: str) -> None:
+        self._r = Roster([Member(gitlab_id=1, nickname="X", telegram_id=7, position=position)])
+
+    async def get(self) -> Roster:
+        return self._r
+
+
+def _conf_client() -> GitLabClient:
+    async def _noop(_: float) -> None:
+        return None
+
+    return GitLabClient(_ConfidentialBackend(), sleep=_noop)
+
+
+@pytest.mark.parametrize("position", ["組員", "餐飲股長", "議程助理"])
+async def test_g_confidential_card_hidden_from_non_leadership(position: str) -> None:
+    client = _conf_client()
+    roster = _RosterOf(position)
+    read = await GitlabGetIssueTool(client, roster).run(GetIssueArgs(iid=243, include_notes=True), CTX)
+    found = await GitlabSearchIssuesTool(client, roster).run(SearchIssuesArgs(title_query=None), CTX)
+    for reply in (read, found):
+        assert SECRET not in reply
+        assert "0912000111" not in reply  # 描述同樣不得外洩
+    assert "機密卡" in read
+
+
+@pytest.mark.parametrize("position", ["組長", "副組長", "總召", "副召"])
+async def test_g_confidential_card_visible_to_leadership(position: str) -> None:
+    reply = await GitlabGetIssueTool(_conf_client(), _RosterOf(position)).run(GetIssueArgs(iid=243), CTX)
+    assert SECRET in reply
+
+
+async def test_g_confidential_card_never_enters_daily_digest() -> None:
+    """每日預告是廣播（無收件者身分可言）→ 不論誰訂閱，機密卡一律不進。"""
+    from datetime import date
+
+    class _GL:
+        async def open_cards(self) -> list[Issue]:
+            return [Issue.from_raw(_CONF_CARDS[i]) for i in (243, 244)]
+
+    cards = await collect_due_cards(_GL(), None, date(2026, 9, 22))
+    assert [c.iid for c in cards] == [244]
+    assert all(SECRET not in c.title for c in cards)

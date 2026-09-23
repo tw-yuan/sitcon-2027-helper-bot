@@ -18,6 +18,7 @@ def _issue(
     assignees: list[Assignee] | None = None,
     title: str = "卡",
     labels: list[str] | None = None,
+    confidential: bool = False,
 ) -> Issue:
     return Issue(
         iid=iid,
@@ -28,6 +29,7 @@ def _issue(
         assignees=assignees or [],
         due_date=due,
         state="opened",
+        confidential=confidential,
     )
 
 
@@ -128,6 +130,25 @@ async def test_collect_keeps_only_due_window() -> None:
     )
     cards = await collect_due_cards(gitlab, None, TARGET)
     assert [c.iid for c in cards] == [2, 3, 4]
+
+
+async def test_collect_excludes_confidential_cards() -> None:
+    """2026-09-23：機密卡不進每日預告——預告是廣播給所有訂閱群，且卡片不分組別全發。"""
+    gitlab = _FakeGitLab(
+        [
+            _issue(243, "2026-07-25", [Assignee(id=1)], title="寄送總統邀請信", confidential=True),
+            _issue(244, "2026-07-25", [Assignee(id=1)], title="一般卡"),
+        ]
+    )
+    cards = await collect_due_cards(gitlab, None, TARGET)
+    assert [c.iid for c in cards] == [244]
+    assert all("總統" not in c.title for c in cards)
+
+
+async def test_collect_all_confidential_skips_roster() -> None:
+    """視窗內只有機密卡時視同無卡，連名冊都不必打。"""
+    gitlab = _FakeGitLab([_issue(243, "2026-07-25", confidential=True)])
+    assert await collect_due_cards(gitlab, _FakeRoster(fail=True), TARGET) == []
 
 
 async def test_collect_card_without_due_date_is_excluded() -> None:

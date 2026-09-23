@@ -3,6 +3,10 @@
 （隔天到期、當天到期、過期一天內）；過期超過一天、未填到期日者皆不提醒。
 並把 assignee 換成 Telegram tag、從 Team:: label 取出組名供 digest 分組。
 
+【2026-09-23 修訂】機密卡（GitLab confidential）一律排除：每日預告是廣播給所有訂閱群、
+且不分組別全發（scheduler.dispatch），機密卡的標題／assignee 會因此外洩給非權限者。
+需要看機密卡的人請直接上 GitLab，或在授權群裡問小石（那是使用者主動發問、逐次可控）。
+
 tag 對應鏈（roster 以 gitlab_id 對應）：
     telegram_username → @username（真 mention，會跳通知）
     telegram_id       → tg://user?id= 點擊式 mention（顯示暱稱，同樣會通知）
@@ -53,11 +57,14 @@ def mention_html(a: Assignee, member: Member | None) -> str:
 
 async def collect_due_cards(gitlab: GitLabClient, roster: RosterService | None, target: date) -> list[CardReminder]:
     """開著（GL-22）且 due ∈ [target−2, target] 的卡片（target＝預告目標日，即隔天）：
-    隔天到期、當天到期、過期一天內；過期超過一天與未填到期日不列。過期最久在前。"""
+    隔天到期、當天到期、過期一天內；過期超過一天與未填到期日不列。過期最久在前。
+    機密卡（confidential）不列——預告是廣播，見模組 docstring。"""
     dated = [
         (i, due)
         for i in await gitlab.open_cards()
-        if i.due_date and target - timedelta(days=2) <= (due := date.fromisoformat(i.due_date)) <= target
+        if not i.confidential  # 機密卡不進廣播（2026-09-23）
+        and i.due_date
+        and target - timedelta(days=2) <= (due := date.fromisoformat(i.due_date)) <= target
     ]
     if not dated:
         return []

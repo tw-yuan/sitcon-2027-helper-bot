@@ -3,6 +3,12 @@
 硬性防線在 GitLabClient；此層負責：組別自動指派（GL-2/3）、預設狀態 Inbox（GL-5，
 2026-08-17 起為 native status 而非 Status:: label）、把外部內容以 <external_data> 包起（NFR-6）、
 把 label／status 錯誤轉為 GL-12 回覆。
+
+【2026-09-23 客戶指示】機密卡（GitLab confidential）只對組長／副組長／總召／副召顯示：
+權限只有工具層知道（要靠 ctx.user_id 反查名冊），所以擋在這裡而非 GitLabClient。
+讀取路徑（get_issue、search_issues、Linked items）一律先過 _may_view_confidential；
+寫入路徑（編輯／留言）不擋——回覆不含卡片既有內容，擋了反而讓有權限者也動不了。
+每日預告另在 notify/cards.py 無條件排除（廣播無收件者身分可言）。
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from ...services.gitlab_client import (
     LinkedIssue,
     StatusNotFoundError,
 )
-from ...services.sheets_roster import Roster, RosterService, RosterUnavailableError
+from ...services.sheets_roster import Roster, RosterService, RosterUnavailableError, may_view_confidential
 from .base import Tool, ToolContext
 from .external_data import wrap_external
 
@@ -92,6 +98,14 @@ def _fmt_issue_line(
     return f"#{iid}｜{status or state}｜{url}\n" + wrap_external(f"標題：{title}｜指派：{who}")
 
 
+# 機密卡對無權限者的說明（不得透露標題等任何內容）
+_CONFIDENTIAL_ROLES = "組長／副組長／總召／副召"
+_CONFIDENTIAL_DENIED = (
+    "這是機密卡，只有{roles}可以透過小石查看。請據實告訴使用者這張卡是機密卡、"
+    "其身分無法透過小石查看，不要猜測或編造卡片內容；若對方確實有 GitLab 權限，請他直接上 GitLab 看。"
+)
+
+
 _LINK_TYPE_NOTE = {"blocks": "本卡擋住它", "is_blocked_by": "它擋住本卡"}  # 以被查看的卡為視角
 
 
@@ -124,6 +138,18 @@ class _GitLabToolBase(Tool):
         self._gl = gitlab
         self._roster = roster
         self._gitlab_url = gitlab_url
+
+    async def _may_view_confidential(self, ctx: ToolContext) -> bool:
+        """發話者可否看機密卡（2026-09-23）：以 telegram_id 精確反查名冊的職位。
+
+        fail closed——名冊不可用、或名冊查無此人時一律不給看：機密卡寧可少看一次，
+        不因名冊掛掉而外洩。名冊全員皆有 telegram_id，故不做 username 後援比對
+        （Telegram username 可被釋出後由他人取得，不足以當權限憑據）。
+        """
+        roster = await _safe_roster(self._roster)
+        if roster is None:
+            return False
+        return may_view_confidential(roster.by_telegram_id(ctx.user_id))
 
 
 # --------------------------------------------------------------------------- #
@@ -356,6 +382,9 @@ class GitlabGetIssueTool(_GitLabToolBase):
             issue = await self._gl.get_issue(args.iid)
         except GitLabError as exc:
             return f"讀取失敗：{exc}"
+        may_see = await self._may_view_confidential(ctx)
+        if issue.confidential and not may_see:
+            return f"#{args.iid}：" + _CONFIDENTIAL_DENIED.format(roles=_CONFIDENTIAL_ROLES)
         who = [a.username or str(a.id) for a in issue.assignees]
         out = [_fmt_issue_line(issue.iid, issue.title, issue.state, issue.status, who, issue.web_url)]
         if issue.labels:
@@ -367,10 +396,17 @@ class GitlabGetIssueTool(_GitLabToolBase):
         except GitLabError as exc:
             links = []
             out.append(f"（Linked items 讀取失敗：{exc}）")
+        hidden = 0
+        if not may_see:  # 連結卡也可能是機密卡（2026-09-23）
+            visible = [link for link in links if not link.issue.confidential]
+            hidden = len(links) - len(visible)
+            links = visible
         if links:
             closed = sum(1 for link in links if link.issue.state == "closed")
             out.append(f"Linked items 共 {len(links)} 張（開 {len(links) - closed}／已關 {closed}）：")
             out.extend(_fmt_link_line(link) for link in links)
+        if hidden:
+            out.append(f"（另有 {hidden} 張連結卡是機密卡，未對此使用者顯示——只有{_CONFIDENTIAL_ROLES}看得到）")
         if args.include_notes:
             try:
                 notes = await self._gl.get_issue_notes(args.iid, human_only=True)
@@ -499,6 +535,21 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
         except GitLabError as exc:
             return f"查詢失敗：{exc}"
 
+        if not await self._may_view_confidential(ctx):  # 2026-09-23：機密卡在計數前就濾掉
+            visible = [i for i in issues if not i.confidential]
+            hidden = len(issues) - len(visible)
+            issues = visible
+            if hidden and not issues:
+                return (
+                    f"查到的 {hidden} 張都是機密卡，未對此使用者顯示。"
+                    + _CONFIDENTIAL_DENIED.format(roles=_CONFIDENTIAL_ROLES)
+                )
+            if hidden:
+                note = f"（另有 {hidden} 張機密卡未顯示——只有{_CONFIDENTIAL_ROLES}看得到）\n"
+            else:
+                note = ""
+        else:
+            note = ""
         if not issues:
             return "查無符合條件的卡片。"
         total = len(issues)
@@ -510,7 +561,7 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
             for i in shown
         ]
         header = f"共 {total} 張" + ("（顯示前 10 張，可要求下一批）" if total > 10 else "") + "："
-        return header + "\n" + "\n".join(lines)
+        return note + header + "\n" + "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #

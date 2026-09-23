@@ -566,6 +566,18 @@ def _bare_issue(iid: int, due: str | None, state: str = "opened", labels: list[s
             "labels": labels or [], "assignees": [], "due_date": due, "state": state}
 
 
+async def test_open_cards_carries_confidential_flag() -> None:
+    """機密旗標要一路帶到 Issue（預告端據此排除；見 notify/cards.py）。"""
+    b = FakeBackend(LABELS)
+    b.issues = {
+        1: _bare_issue(1, "2026-08-01") | {"confidential": True},
+        2: _bare_issue(2, "2026-08-02"),  # 未帶此欄 → False
+    }
+    b.issue_statuses = {1: "Inbox", 2: "Inbox"}
+    issues = {i.iid: i.confidential for i in await _client(b).open_cards()}
+    assert issues == {1: True, 2: False}
+
+
 async def test_open_cards_filters_and_sorts() -> None:
     b = FakeBackend(LABELS)
     b.issues = {

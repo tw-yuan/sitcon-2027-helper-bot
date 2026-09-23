@@ -110,6 +110,8 @@ class Issue:
     assignees: list[Assignee]
     due_date: str | None
     state: str
+    # 機密卡（GitLab confidential）：非專案成員看不到，主動推播一律排除（notify/cards.py）
+    confidential: bool = False
     # native status 名稱（REST 不回傳，由 client 以 GraphQL 批次補上；未設定／未啟用時為 None）
     status: str | None = None
 
@@ -128,6 +130,7 @@ class Issue:
             assignees=assignees,
             due_date=d.get("due_date"),
             state=d.get("state", ""),
+            confidential=bool(d.get("confidential")),
         )
 
 

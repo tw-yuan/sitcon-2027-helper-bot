@@ -62,6 +62,25 @@ def holds_leadership(member: Member) -> bool:
     return POSITION_LEADER in other or POSITION_CHIEF in other
 
 
+# 可看機密卡的職位（2026-09-23 客戶指示）：組長／副組長／總召／副召。
+# 「副組長」「副總召」字面上含「組長」「總召」，子字串比對即涵蓋；但名冊把副總召寫成「副召」，
+# 不含「總召」，必須單獨列出。股長／股員（餐飲股長、報到股長…）不含「組長」，不會誤中。
+CONFIDENTIAL_TITLES: tuple[str, ...] = ("組長", "總召", "副召")
+
+
+def may_view_confidential(member: Member | None) -> bool:
+    """此人能否透過小石看到機密卡（GitLab confidential）。
+
+    比對 position 與跨組兼任的自由文字 other_role（見 holds_leadership 的說明）。
+    名冊查無此人（member is None）即為否——寧可讓有權限的人自己上 GitLab 看，
+    也不要因名冊缺漏把機密卡送給不該看的人。
+    """
+    if member is None:
+        return False
+    text = f"{member.position or ''}\n{member.other_role or ''}"
+    return any(title in text for title in CONFIDENTIAL_TITLES)
+
+
 class RosterUnavailableError(RuntimeError):
     """名冊無法取得且無可用快取（EC-11）。"""
 

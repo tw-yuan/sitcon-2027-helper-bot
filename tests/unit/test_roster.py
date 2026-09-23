@@ -13,6 +13,7 @@ from sitcon_bot.services.sheets_roster import (
     Roster,
     RosterService,
     RosterUnavailableError,
+    may_view_confidential,
     parse_roster,
 )
 
@@ -263,3 +264,36 @@ async def test_ec11_raises_when_no_cache() -> None:
     svc = RosterService(fetcher, ttl_seconds=60, clock=FakeClock())
     with pytest.raises(RosterUnavailableError):
         await svc.get()
+
+
+# ------------------------------------------------------------------ #
+# 機密卡可視性（2026-09-23 客戶指示）：組長／副組長／總召／副召
+# ------------------------------------------------------------------ #
+def _m(position: str | None = None, other_role: str | None = None) -> Member:
+    return Member(gitlab_id=1, position=position, other_role=other_role)
+
+
+@pytest.mark.parametrize("position", ["組長", "副組長", "總召", "副召", "副總召"])
+def test_leadership_titles_may_view_confidential(position: str) -> None:
+    assert may_view_confidential(_m(position))
+
+
+@pytest.mark.parametrize(
+    "position",
+    # 名冊裡真實存在的其他職位——「股長」不含「組長」，不可誤判為有權限
+    ["組員", "餐飲股長", "報到股長", "機動股長", "物流股長", "財務股員", "議程助理", None],
+)
+def test_other_titles_may_not_view_confidential(position: str | None) -> None:
+    assert not may_view_confidential(_m(position))
+
+
+def test_cross_team_leadership_in_other_role_may_view() -> None:
+    """跨組兼任寫在 other_role（同 holds_leadership 的地雷）；副手一樣算。"""
+    assert may_view_confidential(_m("組員", "行銷組 組長"))
+    assert may_view_confidential(_m("組員", "編輯組 副組長"))
+    assert not may_view_confidential(_m("組員", "編輯組 組員、開發組 組員"))
+
+
+def test_unknown_member_may_not_view_confidential() -> None:
+    """名冊查無此人 → 一律不給看（fail closed）。"""
+    assert not may_view_confidential(None)
