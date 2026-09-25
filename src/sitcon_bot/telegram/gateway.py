@@ -48,8 +48,10 @@ from telegram.ext import (
 )
 
 from ..agent.context import HistoryStore, PendingStore
+from ..agent.proofread import ProofreadHandler
 from ..auth.groups import GroupStore
 from ..concurrency import KeyedLock
+from ..domain.proofread import proofread_targets
 from ..settings import Settings
 from ..storage.audit import AuditLog
 from .commands import CommandHandlers
@@ -196,12 +198,14 @@ class Gateway:
         business_handler: BusinessHandler | None = None,
         pending_store: PendingStore | None = None,
         history_store: HistoryStore | None = None,
+        proofreader: ProofreadHandler | None = None,
     ) -> None:
         self._settings = settings
         self._groups = groups
         self._audit = audit
         self._commands = commands
         self._business_handler = business_handler or _echo_handler
+        self._proofreader = proofreader
         self._pending = pending_store or PendingStore(settings.context_ttl_seconds)
         self._history = history_store or HistoryStore(settings.context_ttl_seconds)
         self._app: Application | None = None
@@ -281,6 +285,7 @@ class Gateway:
             reply_to_bot=reply_to_bot,
             trigger_name=self._settings.bot_trigger_name,
             bot_username=self.bot_username,
+            proofread=bool(self._proofread_checks(message, text)),
         )
         action = route(
             chat_type=str(message.chat.type),
@@ -331,11 +336,7 @@ class Gateway:
         elif action in (Action.CMD_TAG_LEADERS, Action.CMD_TAG_ALL):
             user = message.from_user
             assert user is not None
-            handler = (
-                self._commands.tag_leaders
-                if action is Action.CMD_TAG_LEADERS
-                else self._commands.tag_all
-            )
+            handler = self._commands.tag_leaders if action is Action.CMD_TAG_LEADERS else self._commands.tag_all
             for part in await handler(user.id, user.username):
                 await self._reply(message, part)
             # 刪掉指令訊息：/tl /ta 在群組裡是可點的連結，留著容易被誤觸而重複召喚。
@@ -346,6 +347,36 @@ class Gateway:
             await self._reply(message, await self._commands.notify_test(chat.id))
         elif action is Action.BUSINESS:
             await self._handle_business(message, text)
+        elif action is Action.PROOFREAD:
+            await self._handle_proofread(message, text)
+
+    def _proofread_checks(self, message: Message, text: str) -> frozenset[str]:
+        """糾錯預篩；僅群組、非轉傳訊息，且有設定糾錯器時才檢查（純本機字串比對）。"""
+        if self._proofreader is None or str(message.chat.type) == "private" or message.forward_origin:
+            return frozenset()
+        return proofread_targets(text, sitcon=self._settings.proofread_sitcon, zai=self._settings.proofread_zai)
+
+    async def _handle_proofread(self, message: Message, text: str) -> None:
+        """糾錯：LLM 判定有錯才回一則糾正；沒錯不回、不加 reaction、不留稽核。"""
+        assert self._proofreader is not None
+        checks = self._proofread_checks(message, text)
+        # 與 agent 回合共用全域額度，但不排同群的序列化鎖——校對不該卡住正常的小石回合
+        async with self._agent_slots:
+            correction = await self._proofreader(text, checks, message.chat.id)
+        if not correction:
+            return
+        await self._reply(message, escape_html(correction))
+        user = message.from_user
+        assert user is not None
+        await self._audit.record(
+            chat_id=message.chat.id,
+            chat_title=message.chat.title,
+            user_id=user.id,
+            username=user.username,
+            trigger_text=text,
+            action="proofread",
+            detail={"checks": sorted(checks)},
+        )
 
     async def _handle_business(self, message: Message, text: str) -> None:
         user = message.from_user
@@ -655,7 +686,9 @@ class Gateway:
         except Exception:
             log.warning(
                 "刪除訊息失敗 chat_id=%s message_id=%s——bot 需為該群管理員並具備「刪除訊息」權限",
-                chat_id, message_id, exc_info=True,
+                chat_id,
+                message_id,
+                exc_info=True,
             )
             return False
 

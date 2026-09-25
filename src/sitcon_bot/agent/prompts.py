@@ -155,18 +155,14 @@ def _labels_section(labels: list[str]) -> str:
         return "專案 label 白名單：（尚未載入）"
     return (
         "專案 label 白名單（只能使用以下既有 label；scoped label 以 :: 分隔，"
-        "同 scope 互斥；籌會 label 形如「MMDD 第N籌」或「MMDD 站立會議」）：\n"
-        + "、".join(labels)
+        "同 scope 互斥；籌會 label 形如「MMDD 第N籌」或「MMDD 站立會議」）：\n" + "、".join(labels)
     )
 
 
 def _statuses_section(statuses: list[str]) -> str:
     if not statuses:
         return "卡片狀態白名單（native status）：（尚未載入或 GitLab 端尚未設定；此時卡片操作不帶狀態）"
-    return (
-        "卡片狀態白名單（GitLab native status，非 label；status 欄位只能用以下名稱）：\n"
-        + "、".join(statuses)
-    )
+    return "卡片狀態白名單（GitLab native status，非 label；status 欄位只能用以下名稱）：\n" + "、".join(statuses)
 
 
 def _roster_section(rows: list[dict[str, object]], available: bool) -> str:
@@ -174,9 +170,8 @@ def _roster_section(rows: list[dict[str, object]], available: bool) -> str:
         return "名冊：目前暫不可用，涉及人名/組長指派的功能請告知使用者稍後再試。"
     if not rows:
         return "名冊：（空）"
-    return (
-        "名冊（完整欄位，含 email／github；供人名解析、組長/總召指派與成員資訊查詢）：\n"
-        + json.dumps(rows, ensure_ascii=False)
+    return "名冊（完整欄位，含 email／github；供人名解析、組長/總召指派與成員資訊查詢）：\n" + json.dumps(
+        rows, ensure_ascii=False
     )
 
 
@@ -206,10 +201,7 @@ def _knowledge_section(knowledge: str | None) -> str:
     """背景知識（會議室代碼等內部常識）；缺檔時整段省略，不佔 prompt。"""
     if not knowledge:
         return ""
-    return (
-        "背景知識（籌備團隊內部常識，回答時可直接引用；與使用者訊息矛盾時以使用者為準）：\n"
-        + knowledge
-    )
+    return "背景知識（籌備團隊內部常識，回答時可直接引用；與使用者訊息矛盾時以使用者為準）：\n" + knowledge
 
 
 class PromptBuilder:
@@ -238,7 +230,8 @@ class PromptBuilder:
             log.warning("群組記憶載入失敗 chat_id=%s", chat_id, exc_info=True)
             return []
 
-    async def build(self, chat_id: int | None = None) -> str:
+    async def build(self, chat_id: int | None = None, *, lean: bool = False) -> str:
+        """組 system prompt。lean=True 省略 label／狀態白名單與名冊（糾錯用，不需要也不該帶個資）。"""
         data = await self._provider()
         sections = [
             PERSONA,
@@ -246,9 +239,9 @@ class PromptBuilder:
             DOC_SEARCH,
             WEB_SEARCH,
             f"今天是 {self._today()}，時區 {self._tz}；所有日期解析與顯示都用此時區。",
-            _labels_section(data.labels),
-            _statuses_section(data.statuses),
-            _roster_section(data.roster_rows, data.roster_available),
+            "" if lean else _labels_section(data.labels),
+            "" if lean else _statuses_section(data.statuses),
+            "" if lean else _roster_section(data.roster_rows, data.roster_available),
             _charter_section(data.charter),
             _knowledge_section(data.knowledge),
             _memories_section(await self._group_memories(chat_id)),

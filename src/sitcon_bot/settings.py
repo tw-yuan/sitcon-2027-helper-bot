@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     # 純 reply-chain 脈絡下同群並行沒有正確性問題（一訊息一 session），差別只在回覆順序。
     serialize_per_chat: bool = True
 
+    # --- 糾錯（一般訊息的校對觸發）---
+    # 授權群組的一般訊息命中預篩時，以無工具 LLM 單次判斷，需要糾正才回覆，沒錯完全不出聲。
+    proofread_sitcon: bool = True  # 非全大寫的 sitcon（網址／帳號／識別字除外）
+    proofread_zai: bool = True  # 含「在」「再」→ 判斷是否混用
+    proofread_thinking: ThinkingLevel = "off"  # 觸發量大，預設不開 thinking 省成本與延遲
+
     # --- 其他 ---
     # 以 Telegram sendMessageDraft 串流部分回覆（Bot API 9.5+ 的打字動畫草稿預覽）。
     # 草稿為暫時預覽，最終回覆仍以正式訊息送出；不支援的環境會自動停用（不影響回覆）。
@@ -202,8 +208,7 @@ class Settings(BaseSettings):
             f"  Drive         : drive_id={self.drive_shared_drive_id}  scope={self.drive_scope_folder_names}",
             "  Calendar(DWD) : "
             + (
-                f"subject={self.google_dwd_subject}  calendar={self.calendar_id}  "
-                f"邀請信={self.calendar_send_updates}"
+                f"subject={self.google_dwd_subject}  calendar={self.calendar_id}  邀請信={self.calendar_send_updates}"
                 if self.google_dwd_subject
                 else "停用（GOOGLE_DWD_SUBJECT 未設定）"
             ),
@@ -232,6 +237,8 @@ class Settings(BaseSettings):
                 if self.web_search_api_key.get_secret_value()
                 else "停用（WEB_SEARCH_API_KEY 未設定）"
             ),
+            f"  糾錯          : sitcon={'開' if self.proofread_sitcon else '關'} "
+            f"在再={'開' if self.proofread_zai else '關'} thinking={self.proofread_thinking}",
             f"  日誌等級       : {self.log_level}",
             "─────────────────────────────",
         ]

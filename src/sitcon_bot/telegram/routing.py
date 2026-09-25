@@ -15,6 +15,7 @@ class Kind(Enum):
 
     COMMAND = auto()  # 以 / 開頭且指向本 bot（TRIG-1d）
     BUSINESS = auto()  # @提及 / reply bot / 「小石」前綴（TRIG-1a/b/c）
+    PROOFREAD = auto()  # 一般訊息但命中糾錯預篩（小寫 sitcon、在／再）；只做校對，不進 agent
     NONE = auto()  # 非觸發，應丟棄（不入儲存、不送 LLM）
 
 
@@ -37,6 +38,7 @@ class Action(Enum):
     CMD_TAG_LEADERS = auto()  # /tl：tag 全部組長＋總召（不含副組長、不含自己）
     CMD_TAG_ALL = auto()  # /ta：tag 全體工作人員（不含自己）
     BUSINESS = auto()  # 交給 agent 處理
+    PROOFREAD = auto()  # 交給糾錯器（無工具 LLM 單次判斷，沒錯就不回）
 
 
 ADMIN_COMMANDS = frozenset(
@@ -97,8 +99,12 @@ def classify_trigger(
     reply_to_bot: bool,
     trigger_name: str,
     bot_username: str | None,
+    proofread: bool = False,
 ) -> tuple[Kind, str | None]:
-    """判斷訊息觸發類型（TRIG-1）。回傳 (Kind, 指令名或 None)。"""
+    """判斷訊息觸發類型（TRIG-1）。回傳 (Kind, 指令名或 None)。
+
+    proofread：呼叫端預篩（domain.proofread）是否命中；指令與業務觸發優先。
+    """
     stripped = (text or "").lstrip()
     if stripped.startswith("/"):
         cmd = parse_command(stripped, bot_username)
@@ -107,6 +113,8 @@ def classify_trigger(
         return (Kind.COMMAND, cmd)
     if mentions_bot or reply_to_bot or (trigger_name and stripped.startswith(trigger_name)):
         return (Kind.BUSINESS, None)
+    if proofread:
+        return (Kind.PROOFREAD, None)
     return (Kind.NONE, None)
 
 
@@ -143,5 +151,8 @@ def route(
 
     if kind is Kind.BUSINESS:
         return Action.BUSINESS if is_authorized else Action.IGNORE
+
+    if kind is Kind.PROOFREAD:
+        return Action.PROOFREAD if is_authorized else Action.IGNORE
 
     return Action.IGNORE

@@ -16,6 +16,7 @@ from pathlib import Path
 from .agent.context import PendingStore
 from .agent.core import Agent, AgentRequest
 from .agent.prompts import PromptBuilder, PromptData
+from .agent.proofread import Proofreader
 from .agent.tools.base import ToolRegistry
 from .agent.tools.calendar_tools import build_calendar_tools
 from .agent.tools.drive_tools import build_drive_tools
@@ -109,7 +110,9 @@ async def run(settings: Settings) -> None:
         )
         log.info(
             "Calendar（DWD）啟用：subject=%s calendar=%s sendUpdates=%s",
-            settings.google_dwd_subject, settings.calendar_id, settings.calendar_send_updates,
+            settings.google_dwd_subject,
+            settings.calendar_id,
+            settings.calendar_send_updates,
         )
     else:
         log.info("Calendar（DWD）停用（GOOGLE_DWD_SUBJECT 未設定）")
@@ -269,9 +272,7 @@ async def run(settings: Settings) -> None:
             always_teams=settings.milestone_always_team_list,
             send_when_empty=settings.milestone_notify_when_empty,
         )
-        milestone_deps = MilestoneDeps(
-            subscriptions=SubscriptionStore(db), schedule=milestones, notifier=notifier
-        )
+        milestone_deps = MilestoneDeps(subscriptions=SubscriptionStore(db), schedule=milestones, notifier=notifier)
 
     commands = CommandHandlers(
         settings, groups, reload_cb=reload_cb, milestones=milestone_deps, memories=memories, roster=roster
@@ -304,7 +305,19 @@ async def run(settings: Settings) -> None:
             history=result.history,
         )
 
-    gateway = Gateway(settings, groups, audit, commands, business_handler, pending_store=pending_store)
+    async def lean_prompt_provider() -> PromptData:
+        # 糾錯用：只給職掌與背景知識，不碰 GitLab／名冊（省外部 I/O，也不把個資送進每則校對）
+        return PromptData(charter=charter["text"], knowledge=knowledge["text"])
+
+    lean_prompt_builder = PromptBuilder(lean_prompt_provider, tz=settings.tz, memories_provider=memories.list_for)
+    proofreader = (
+        Proofreader(llm, lean_prompt_builder, settings.proofread_thinking)
+        if settings.proofread_sitcon or settings.proofread_zai
+        else None
+    )
+    gateway = Gateway(
+        settings, groups, audit, commands, business_handler, pending_store=pending_store, proofreader=proofreader
+    )
     gateway_ref["gw"] = gateway
 
     stop = asyncio.Event()
