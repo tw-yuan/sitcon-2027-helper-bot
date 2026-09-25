@@ -110,6 +110,8 @@ cp .env.example .env
 
 - **LLM**：`LLM_PROVIDER=anthropic`（原生格式）或 `openai_compat`（OpenAI／OpenRouter，設 `LLM_BASE_URL`）。
   `LLM_MODEL` 依 provider 的模型字串（OpenRouter 例：`anthropic/claude-sonnet-4.6`）。
+  Cloudflare AI Gateway（compat 端點）：`LLM_PROVIDER=openai_compat`、`LLM_BASE_URL=https://<gateway>/compat`、
+  `LLM_MODEL=deepseek/deepseek-flash`（provider/model 格式）、`LLM_API_KEY`＝CF token（上游 provider key 存在 gateway 端）。
   `LLM_THINKING` = `off|low|medium|high`，統一對映到 adaptive thinking 的 effort（見下方[備註](#關於-thinking-設定)）。
   `LLM_SERVICE_TIER`（僅 openai_compat，留空＝不帶）：Codex 的 fast mode 即 `fast`，官方 API 另有 `priority`／`flex`；
   帳號或 gateway 不支援時 provider 會回 400，改回留空即可。
