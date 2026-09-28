@@ -61,14 +61,18 @@ DOC_MULTI_TAB = {
                 {
                     "table": {
                         "tableRows": [
-                            {"tableCells": [
-                                {"content": [{"paragraph": _para("項目")}]},
-                                {"content": [{"paragraph": _para("金額")}]},
-                            ]},
-                            {"tableCells": [
-                                {"content": [{"paragraph": _para("場地")}]},
-                                {"content": [{"paragraph": _para("120000")}]},
-                            ]},
+                            {
+                                "tableCells": [
+                                    {"content": [{"paragraph": _para("項目")}]},
+                                    {"content": [{"paragraph": _para("金額")}]},
+                                ]
+                            },
+                            {
+                                "tableCells": [
+                                    {"content": [{"paragraph": _para("場地")}]},
+                                    {"content": [{"paragraph": _para("120000")}]},
+                                ]
+                            },
                         ]
                     }
                 }
@@ -257,7 +261,7 @@ def test_extract_docx() -> None:
         {
             "word/document.xml": (
                 "<w:document><w:body>"
-                "<w:p><w:r><w:t>第一段</w:t></w:r><w:r><w:t xml:space=\"preserve\">，接著</w:t></w:r></w:p>"
+                '<w:p><w:r><w:t>第一段</w:t></w:r><w:r><w:t xml:space="preserve">，接著</w:t></w:r></w:p>'
                 "<w:p><w:r><w:t>第二段 &amp; 符號</w:t></w:r></w:p>"
                 "</w:body></w:document>"
             )
@@ -273,26 +277,26 @@ def test_extract_xlsx_shared_strings_and_sheet_names() -> None:
     data = _zip_bytes(
         {
             "xl/workbook.xml": (
-                '<workbook><sheets>'
+                "<workbook><sheets>"
                 '<sheet name="名單" sheetId="1" r:id="rId1"/>'
                 '<sheet name="統計" sheetId="2" r:id="rId2"/>'
                 "</sheets></workbook>"
             ),
             "xl/_rels/workbook.xml.rels": (
-                '<Relationships>'
+                "<Relationships>"
                 '<Relationship Id="rId1" Target="worksheets/sheet1.xml"/>'
                 '<Relationship Id="rId2" Target="worksheets/sheet2.xml"/>'
                 "</Relationships>"
             ),
             "xl/sharedStrings.xml": "<sst><si><t>姓名</t></si><si><t>小石</t></si></sst>",
             "xl/worksheets/sheet1.xml": (
-                '<worksheet><sheetData>'
+                "<worksheet><sheetData>"
                 '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>42</v></c></row>'
                 '<row r="2"><c r="A2" t="s"><v>1</v></c></row>'
                 "</sheetData></worksheet>"
             ),
             "xl/worksheets/sheet2.xml": (
-                '<worksheet><sheetData>'
+                "<worksheet><sheetData>"
                 '<row r="1"><c r="A1" t="inlineStr"><is><t>合計</t></is></c></row>'
                 "</sheetData></worksheet>"
             ),

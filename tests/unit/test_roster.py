@@ -41,9 +41,20 @@ UNKNOWN_COLUMN_VALUES = ["王小元", "0912345678", "1234-5678-9012"]
 
 def _leader_row() -> list[str]:
     return [
-        "yuan@example.com", "yuan-gh", "778899", "yuan_tw", "1001", "@Yuan_TW", "555001",
-        "Yuan", "開發組", "組長", "",
-        "王小元", "0912345678", "1234-5678-9012",
+        "yuan@example.com",
+        "yuan-gh",
+        "778899",
+        "yuan_tw",
+        "1001",
+        "@Yuan_TW",
+        "555001",
+        "Yuan",
+        "開發組",
+        "組長",
+        "",
+        "王小元",
+        "0912345678",
+        "1234-5678-9012",
     ]
 
 
@@ -110,8 +121,20 @@ def _row(
 ) -> list[str]:
     """依 FULL_HEADER 欄位順序組一列資料（未列參數者留空）。"""
     return [
-        email, github_username, github_id, gitlab_username, gitlab_id,
-        telegram_username, telegram_id, nickname, role, position, "", "", "", "",
+        email,
+        github_username,
+        github_id,
+        gitlab_username,
+        gitlab_id,
+        telegram_username,
+        telegram_id,
+        nickname,
+        role,
+        position,
+        "",
+        "",
+        "",
+        "",
     ]
 
 

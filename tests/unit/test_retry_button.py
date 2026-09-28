@@ -21,8 +21,13 @@ from sitcon_bot.telegram.gateway import (
 
 def _breq(**kw: Any) -> BusinessRequest:
     base: dict[str, Any] = dict(
-        chat_id=-1, chat_title="群", thread_id=None, user_id=7, username="tester",
-        text="小石 查一下", trigger_message_id=5,
+        chat_id=-1,
+        chat_title="群",
+        thread_id=None,
+        user_id=7,
+        username="tester",
+        text="小石 查一下",
+        trigger_message_id=5,
     )
     base.update(kw)
     return BusinessRequest(**base)

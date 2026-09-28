@@ -93,8 +93,14 @@ def _req(
     reply_context: str | None = None,
 ) -> AgentRequest:
     return AgentRequest(
-        chat_id=chat_id, thread_id=thread, user_id=7, username="yuan", text=text,
-        resume=resume, history=history, reply_context=reply_context,
+        chat_id=chat_id,
+        thread_id=thread,
+        user_id=7,
+        username="yuan",
+        text=text,
+        resume=resume,
+        history=history,
+        reply_context=reply_context,
     )
 
 

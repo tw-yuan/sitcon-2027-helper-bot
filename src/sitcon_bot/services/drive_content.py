@@ -327,7 +327,7 @@ def render_spreadsheet(
         if len(rows) > len(shown):
             note = (
                 f"\n…（另 {len(rows) - len(shown)} 列未顯示；"
-                f"要看整張請用 drive_read_sheet 指定 worksheet=\"{title}\"，或加 cell_range 縮小範圍）"
+                f'要看整張請用 drive_read_sheet 指定 worksheet="{title}"，或加 cell_range 縮小範圍）'
             )
         blocks.append(f"【工作表：{title}】（{len(rows)} 列有資料）\n{body}{note}")
 
@@ -343,10 +343,7 @@ def _slides_elements_text(elements: list[dict[str, Any]]) -> list[str]:
     for el in elements:
         shape = el.get("shape")
         if shape is not None:
-            runs = [
-                te.get("textRun", {}).get("content", "")
-                for te in shape.get("text", {}).get("textElements", [])
-            ]
+            runs = [te.get("textRun", {}).get("content", "") for te in shape.get("text", {}).get("textElements", [])]
             text = "".join(runs).strip()
             if text:
                 out.append(text)
@@ -356,8 +353,7 @@ def _slides_elements_text(elements: list[dict[str, Any]]) -> list[str]:
                 cells: list[str] = []
                 for cell in row.get("tableCells", []):
                     runs = [
-                        te.get("textRun", {}).get("content", "")
-                        for te in cell.get("text", {}).get("textElements", [])
+                        te.get("textRun", {}).get("content", "") for te in cell.get("text", {}).get("textElements", [])
                     ]
                     cells.append("".join(runs).replace("\n", " ").strip())
                 if any(cells):
@@ -662,9 +658,7 @@ class DriveContentService:
         if mode is not None:  # 純文字類（text/*、json、yaml、xml）與 Google 文件類 export 後援
             text = await self._search.fetch_text(file_id, mode[1])
             return text, "純文字"
-        raise DriveReadError(
-            f"這個檔案類型（{mime or '未知'}）沒有文字內容可讀（圖片、影音等請直接開連結檢視）。"
-        )
+        raise DriveReadError(f"這個檔案類型（{mime or '未知'}）沒有文字內容可讀（圖片、影音等請直接開連結檢視）。")
 
     async def _download(self, file_id: str) -> bytes:
         data = await self._gateway.download_bytes(file_id)
@@ -704,9 +698,7 @@ class DriveContentService:
         grid_titles = [p.get("title", "") for p in props if p.get("sheetType", "GRID") == "GRID"]
         if worksheet is not None and worksheet.strip():
             want = worksheet.strip()
-            picked = [t for t in grid_titles if t == want] or [
-                t for t in grid_titles if want.lower() in t.lower()
-            ]
+            picked = [t for t in grid_titles if t == want] or [t for t in grid_titles if want.lower() in t.lower()]
             if not picked:
                 raise DriveReadError(f"沒有叫「{want}」的工作表。既有工作表：{'、'.join(grid_titles)}")
             targets = picked[:1]

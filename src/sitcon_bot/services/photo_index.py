@@ -25,8 +25,18 @@ SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 _SPLIT_RE = re.compile(r"[;；,、]")
 # 以表頭名對應欄位（容忍欄位順序變動）
 _WANTED = (
-    "photo_id", "photo_url", "image_preview_url", "album_title", "subject_type", "photographer",
-    "scene_tags", "mood_tags", "recommended_uses", "orientation", "visual_description", "people_count",
+    "photo_id",
+    "photo_url",
+    "image_preview_url",
+    "album_title",
+    "subject_type",
+    "photographer",
+    "scene_tags",
+    "mood_tags",
+    "recommended_uses",
+    "orientation",
+    "visual_description",
+    "people_count",
 )
 
 _Clock = Callable[[], float]
@@ -162,9 +172,7 @@ class GoogleSheetPhotoFetcher:
 
     def _fetch_sync(self) -> tuple[list[str], list[list[str]]]:
         if self._service is None:
-            self._service, self._creds = build_google_service(
-                "sheets", "v4", self._sa_json_path, [SHEETS_SCOPE]
-            )
+            self._service, self._creds = build_google_service("sheets", "v4", self._sa_json_path, [SHEETS_SCOPE])
         resp = (
             self._service.spreadsheets()  # type: ignore[attr-defined]
             .values()
@@ -225,7 +233,5 @@ class PhotoIndexService:
         return await self.get(force=True)
 
 
-def build_photo_index_service(
-    sa_json_path: str, sheet_id: str, tab: str, ttl_seconds: int
-) -> PhotoIndexService:
+def build_photo_index_service(sa_json_path: str, sheet_id: str, tab: str, ttl_seconds: int) -> PhotoIndexService:
     return PhotoIndexService(GoogleSheetPhotoFetcher(sa_json_path, sheet_id, tab), ttl_seconds)

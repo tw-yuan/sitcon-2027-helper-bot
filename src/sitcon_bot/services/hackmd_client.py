@@ -255,9 +255,7 @@ class HackMDClient:
             url=_note_url(data),
         )
 
-    async def update_note(
-        self, note_id: str, *, content: str | None = None, tags: list[str] | None = None
-    ) -> None:
+    async def update_note(self, note_id: str, *, content: str | None = None, tags: list[str] | None = None) -> None:
         """更新既有 team note（HM-13）。整份內容寫回；不刪除（HM-16）。"""
         payload: dict[str, Any] = {}
         if content is not None:
@@ -274,9 +272,7 @@ class HackMDClient:
 
         API 回 202 非同步處理，實測約 5 秒內生效——移動後立刻 list_notes 可能還看到舊位置。
         """
-        await self._request(
-            "PATCH", f"/teams/{self._team}/notes/{note_id}", {"parentFolderId": parent_folder_id}
-        )
+        await self._request("PATCH", f"/teams/{self._team}/notes/{note_id}", {"parentFolderId": parent_folder_id})
         self._notes = self._notes_at = None  # folderPaths 已變，metadata 快取失效
 
 

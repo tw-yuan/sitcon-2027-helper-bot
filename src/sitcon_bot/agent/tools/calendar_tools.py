@@ -57,9 +57,7 @@ class CreateEventArgs(BaseModel):
 
 class CalendarCreateEventTool(_CalendarToolBase):
     name = "calendar_create_event"
-    description = (
-        "在行事曆建立活動：時間、邀請對象、Meet（掛既有會議室連結或開新的）。多場活動就多次呼叫。"
-    )
+    description = "在行事曆建立活動：時間、邀請對象、Meet（掛既有會議室連結或開新的）。多場活動就多次呼叫。"
     args_model = CreateEventArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:

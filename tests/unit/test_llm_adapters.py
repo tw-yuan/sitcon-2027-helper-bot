@@ -269,9 +269,7 @@ async def test_anthropic_streaming_accumulates_and_parses_final() -> None:
         usage=SimpleNamespace(input_tokens=10, output_tokens=2),
         stop_reason="end_turn",
     )
-    client = SimpleNamespace(
-        messages=SimpleNamespace(stream=lambda **params: FakeAnthropicStream(["好", "喔"], final))
-    )
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **params: FakeAnthropicStream(["好", "喔"], final)))
     adapter = AnthropicAdapter(api_key="x", model="m", client=client)
     seen: list[str] = []
 

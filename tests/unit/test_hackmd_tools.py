@@ -29,8 +29,7 @@ TEMPLATES = TemplateStore(
             "# {{title}}\n{{meeting_type}} {{date}} {{location}}"
         ),
         "team": (
-            "---\ntitle: {{title}}\ntags: 會議記錄, SITCON 2027, SITCON, 2027, {{team}}\n---\n"
-            "# {{title}}\n{{team}}"
+            "---\ntitle: {{title}}\ntags: 會議記錄, SITCON 2027, SITCON, 2027, {{team}}\n---\n# {{title}}\n{{team}}"
         ),
     }
 )
@@ -208,9 +207,7 @@ def _search(notes: list[NoteMeta]) -> HackmdSearchNotesTool:
 
 
 async def test_search_no_hit() -> None:
-    reply = await _search([NoteMeta(id="n1", title="其他", tags=[])]).run(
-        SearchNotesArgs(title_keywords=["贊助"]), CTX
-    )
+    reply = await _search([NoteMeta(id="n1", title="其他", tags=[])]).run(SearchNotesArgs(title_keywords=["贊助"]), CTX)
     assert "找不到" in reply
 
 
@@ -256,17 +253,13 @@ async def test_search_shows_folder_path() -> None:
 
 
 async def test_search_folder_param_narrows_top_folder() -> None:
-    reply = await _search(_WHOLE_TEAM_NOTES).run(
-        SearchNotesArgs(title_keywords=["贊助"], folder="SITCON 2026"), CTX
-    )
+    reply = await _search(_WHOLE_TEAM_NOTES).run(SearchNotesArgs(title_keywords=["贊助"], folder="SITCON 2026"), CTX)
     assert "命中 [b]" in reply
     assert "[a]" not in reply and "[c]" not in reply and "[d]" not in reply
 
 
 async def test_search_folder_param_root_only() -> None:
-    reply = await _search(_WHOLE_TEAM_NOTES).run(
-        SearchNotesArgs(title_keywords=["贊助"], folder="root"), CTX
-    )
+    reply = await _search(_WHOLE_TEAM_NOTES).run(SearchNotesArgs(title_keywords=["贊助"], folder="root"), CTX)
     assert "命中 [d]" in reply
     assert "[a]" not in reply
 

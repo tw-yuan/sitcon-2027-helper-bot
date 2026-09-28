@@ -64,8 +64,13 @@ def _settings(**kw: Any) -> Settings:
 
 def _breq() -> BusinessRequest:
     return BusinessRequest(
-        chat_id=-1, chat_title="群", thread_id=3, user_id=7, username="tester",
-        text="小石 查一下", trigger_message_id=5,
+        chat_id=-1,
+        chat_title="群",
+        thread_id=3,
+        user_id=7,
+        username="tester",
+        text="小石 查一下",
+        trigger_message_id=5,
     )
 
 

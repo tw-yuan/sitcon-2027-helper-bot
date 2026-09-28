@@ -40,9 +40,7 @@ class GroupMemoryStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def add(
-        self, chat_id: int, content: str, by: int | None = None, by_name: str | None = None
-    ) -> GroupMemory:
+    async def add(self, chat_id: int, content: str, by: int | None = None, by_name: str | None = None) -> GroupMemory:
         now = datetime.now(UTC).isoformat()
         mem_id = await self._db.insert(
             """

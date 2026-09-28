@@ -280,9 +280,7 @@ class CommandHandlers:
         targets = [
             m
             for m in roster.members
-            if keep(m)
-            and m.telegram_id != sender_id
-            and not (uname and m.telegram_username == uname)
+            if keep(m) and m.telegram_id != sender_id and not (uname and m.telegram_username == uname)
         ]
 
         mentions: list[str] = []

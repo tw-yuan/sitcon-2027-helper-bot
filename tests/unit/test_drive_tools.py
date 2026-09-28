@@ -69,10 +69,11 @@ EMPTY = SearchResult(files=[], total=0, offset=0, has_more=False, keywords=[])
 
 async def test_format_results_metadata_only() -> None:
     result = SearchResult(
-        files=[
-            DriveFile("場地合約.pdf", "SITCON 2027/合約/場地合約.pdf", "https://drive/1", "application/pdf", "f1")
-        ],
-        total=1, offset=0, has_more=False, keywords=["合約"],
+        files=[DriveFile("場地合約.pdf", "SITCON 2027/合約/場地合約.pdf", "https://drive/1", "application/pdf", "f1")],
+        total=1,
+        offset=0,
+        has_more=False,
+        keywords=["合約"],
     )
     tool = DriveSearchTool(FakeSearchService(result))
     reply = await tool.run(DriveSearchArgs(keywords=["合約"]), CTX)
@@ -95,7 +96,11 @@ async def test_no_results_message() -> None:
 async def test_widened_note() -> None:
     result = SearchResult(
         files=[DriveFile("f.pdf", "SITCON 2027/f.pdf", "u", "application/pdf", "f1")],
-        total=1, offset=0, has_more=False, keywords=["a", "b"], widened=True,
+        total=1,
+        offset=0,
+        has_more=False,
+        keywords=["a", "b"],
+        widened=True,
     )
     reply = await DriveSearchTool(FakeSearchService(result)).run(DriveSearchArgs(keywords=["a", "b"]), CTX)
     assert "放寬" in reply
@@ -138,8 +143,9 @@ async def test_list_folder_formats_folders_then_files() -> None:
         path="SITCON 2027/場務組",
         folder_id="x",
         folders=[DriveFile("物流股", "SITCON 2027/場務組/物流股", "", FOLDER, "sub1")],
-        files=[DriveFile("細流.gdoc", "SITCON 2027/場務組/細流.gdoc", "u1",
-                         "application/vnd.google-apps.document", "f9")],
+        files=[
+            DriveFile("細流.gdoc", "SITCON 2027/場務組/細流.gdoc", "u1", "application/vnd.google-apps.document", "f9")
+        ],
     )
     service = FakeSearchService(listing=listing)
     reply = await DriveListFolderTool(service).run(DriveListFolderArgs(target="x"), CTX)
@@ -152,8 +158,10 @@ async def test_list_folder_formats_folders_then_files() -> None:
 
 async def test_list_folder_private_path_reminder() -> None:
     listing = FolderListing(
-        path="SITCON 2027/行政組（私）", folder_id="p",
-        folders=[], files=[DriveFile("薪資.gsheet", "SITCON 2027/行政組（私）/薪資.gsheet", "u", MIME_SHEET, "f1")],
+        path="SITCON 2027/行政組（私）",
+        folder_id="p",
+        folders=[],
+        files=[DriveFile("薪資.gsheet", "SITCON 2027/行政組（私）/薪資.gsheet", "u", MIME_SHEET, "f1")],
     )
     reply = await DriveListFolderTool(FakeSearchService(listing=listing)).run(DriveListFolderArgs(target="p"), CTX)
     assert "（私）路徑" in reply
@@ -212,7 +220,10 @@ async def test_read_file_private_path_keeps_internal_only_note() -> None:
 async def test_read_file_truncation_and_offset_hint() -> None:
     content = DriveContent(
         file=DriveFile("長文.gdoc", "SITCON 2027/長文.gdoc", "u", None, "d1"),
-        text="字" * 10, truncated=True, offset=0, total_len=25,
+        text="字" * 10,
+        truncated=True,
+        offset=0,
+        total_len=25,
     )
     tool, _ = _content_tool(content)
     reply = await tool.run(DriveReadFileArgs(file_id="d1"), CTX)
@@ -240,9 +251,7 @@ async def test_read_file_service_not_configured() -> None:
 
 
 async def test_read_sheet_passes_worksheet_and_range() -> None:
-    content = DriveContent(
-        file=DriveFile("預算.gsheet", "SITCON 2027/預算.gsheet", "u", MIME_SHEET, "s1"), text="…"
-    )
+    content = DriveContent(file=DriveFile("預算.gsheet", "SITCON 2027/預算.gsheet", "u", MIME_SHEET, "s1"), text="…")
     service = FakeContentService(content)
     tool = DriveReadSheetTool(service)
     await tool.run(DriveReadSheetArgs(file_id="s1", worksheet="總表", cell_range="A1:C9", offset=5), CTX)
@@ -250,9 +259,7 @@ async def test_read_sheet_passes_worksheet_and_range() -> None:
 
 
 async def test_read_doc_passes_tab() -> None:
-    content = DriveContent(
-        file=DriveFile("企劃.gdoc", "SITCON 2027/企劃.gdoc", "u", None, "d9"), text="…"
-    )
+    content = DriveContent(file=DriveFile("企劃.gdoc", "SITCON 2027/企劃.gdoc", "u", None, "d9"), text="…")
     service = FakeContentService(content)
     tool = DriveReadDocTool(service)
     await tool.run(DriveReadDocArgs(file_id="d9", tab="預算"), CTX)

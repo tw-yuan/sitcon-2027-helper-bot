@@ -7,14 +7,36 @@ from sitcon_bot.agent.tools.photo_tools import PhotoSearchArgs, PhotoSearchTool
 from sitcon_bot.services.photo_index import PhotoIndex, parse_photos
 
 HEADER = [
-    "photo_id", "photo_url", "image_preview_url", "album_title", "subject_type", "photographer",
-    "scene_tags", "mood_tags", "recommended_uses", "orientation", "visual_description", "people_count",
+    "photo_id",
+    "photo_url",
+    "image_preview_url",
+    "album_title",
+    "subject_type",
+    "photographer",
+    "scene_tags",
+    "mood_tags",
+    "recommended_uses",
+    "orientation",
+    "visual_description",
+    "people_count",
 ]
 
 
 def _row(pid):
-    return [pid, f"https://flickr/{pid}", "p_q.jpg", "Camp 2026", "people", "康喔",
-            "講者;螢幕", "歡樂", "簡報", "landscape", f"台上講者{pid}", "2"]
+    return [
+        pid,
+        f"https://flickr/{pid}",
+        "p_q.jpg",
+        "Camp 2026",
+        "people",
+        "康喔",
+        "講者;螢幕",
+        "歡樂",
+        "簡報",
+        "landscape",
+        f"台上講者{pid}",
+        "2",
+    ]
 
 
 def _ctx():

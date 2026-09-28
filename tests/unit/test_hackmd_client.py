@@ -65,7 +65,8 @@ async def test_create_note_payload() -> None:
     with respx.mock:
         route = respx.post(f"{BASE_URL}/teams/{TEAM}/notes").mock(
             return_value=httpx.Response(
-                201, json={"id": "n1", "title": "0913 一籌", "tags": ["SITCON 2027"], "publishLink": "https://hackmd.io/n1"}
+                201,
+                json={"id": "n1", "title": "0913 一籌", "tags": ["SITCON 2027"], "publishLink": "https://hackmd.io/n1"},
             )
         )
         c = _client()

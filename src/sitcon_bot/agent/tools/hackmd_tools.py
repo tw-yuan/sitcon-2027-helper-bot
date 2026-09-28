@@ -142,7 +142,10 @@ class HackmdCreateNoteTool(_HackMDToolBase):
         title = f"{mmdd} {args.meeting_name or mtype}"
         auto = [*REQUIRED_BASE_TAGS, "會議文件", mtype, f"{mmdd}{mtype}", *args.extra_tags]
         rendered = self._render(
-            "summit", title=title, date=display_date(args.date, self._tz), meeting_type=mtype,
+            "summit",
+            title=title,
+            date=display_date(args.date, self._tz),
+            meeting_type=mtype,
             location=args.location or "",
         )
         content, tags = merge_tags(rendered, auto)
@@ -284,9 +287,7 @@ class HackmdGetNoteTool(_HackMDToolBase):
         if len(content) > CONTENT_LIMIT:
             content = content[:CONTENT_LIMIT] + "\n…（內文過長已截斷）"
         # 標題、tags、內文皆為 team 任一成員可寫的外部內容 → 全部包進 <external_data>；url 留在外供操作。
-        return f"{note.url}\n" + wrap_external(
-            f"標題：{note.title}｜tags：{'、'.join(note.tags)}\n內文：\n{content}"
-        )
+        return f"{note.url}\n" + wrap_external(f"標題：{note.title}｜tags：{'、'.join(note.tags)}\n內文：\n{content}")
 
 
 # --------------------------------------------------------------------------- #
@@ -294,9 +295,7 @@ class HackmdGetNoteTool(_HackMDToolBase):
 # --------------------------------------------------------------------------- #
 class MoveNoteArgs(BaseModel):
     note_id: str
-    team: str | None = Field(
-        None, description="目標組別資料夾名（移到 <年度根>/<組別>）；目標不在組別底下時留空"
-    )
+    team: str | None = Field(None, description="目標組別資料夾名（移到 <年度根>/<組別>）；目標不在組別底下時留空")
     meeting_docs: bool = Field(
         False,
         description="是否放進「會議文件」：有 team → <年度根>/<組別>/會議文件；無 team → <年度根>/會議文件",

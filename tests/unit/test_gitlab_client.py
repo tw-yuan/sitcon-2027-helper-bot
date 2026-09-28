@@ -242,8 +242,12 @@ async def test_create_rejects_unknown_label_with_candidates() -> None:
     c = _client(FakeBackend(LABELS))
     with pytest.raises(LabelNotFoundError) as ei:
         await c.create_issue(
-            title="t", description="d", label_names=["Team::開發"],
-            assignee_ids=[], due_date=None, requester="@yuan",
+            title="t",
+            description="d",
+            label_names=["Team::開發"],
+            assignee_ids=[],
+            due_date=None,
+            requester="@yuan",
         )
     assert "Team::開發組" in ei.value.candidates
 
@@ -251,8 +255,12 @@ async def test_create_rejects_unknown_label_with_candidates() -> None:
 async def test_create_resolves_label_normalization() -> None:
     b = FakeBackend(LABELS)
     res = await _client(b).create_issue(
-        title="t", description="d", label_names=["team::開發組"],  # 大小寫不同
-        assignee_ids=[], due_date=None, requester="@yuan",
+        title="t",
+        description="d",
+        label_names=["team::開發組"],  # 大小寫不同
+        assignee_ids=[],
+        due_date=None,
+        requester="@yuan",
     )
     assert "Team::開發組" in res.issue.labels
 
@@ -262,8 +270,12 @@ async def test_card_ops_never_create_labels_implicitly() -> None:
     b = FakeBackend(LABELS)
     with pytest.raises(LabelNotFoundError):
         await _client(b).create_issue(
-            title="t", description="d", label_names=["不存在的label"],
-            assignee_ids=[], due_date=None, requester="@yuan",
+            title="t",
+            description="d",
+            label_names=["不存在的label"],
+            assignee_ids=[],
+            due_date=None,
+            requester="@yuan",
         )
     assert b.calls["create_label"] == 0
 
@@ -340,8 +352,12 @@ async def test_delete_label_unknown_raises() -> None:
 async def test_create_appends_attribution() -> None:
     b = FakeBackend(LABELS)
     await _client(b).create_issue(
-        title="t", description="場地保證金", label_names=["Team::行政組"],
-        assignee_ids=[], due_date=None, requester="@yuan",
+        title="t",
+        description="場地保證金",
+        label_names=["Team::行政組"],
+        assignee_ids=[],
+        due_date=None,
+        requester="@yuan",
     )
     assert "requested by @yuan" in b.last_create_payload["description"]
 
@@ -367,8 +383,12 @@ async def test_multi_assignee_discrepancy_detected() -> None:
     b = FakeBackend(LABELS)
     b.applied_assignees = [1, 2]  # API 只套用 1、2
     res = await _client(b).create_issue(
-        title="t", description="d", label_names=["Team::開發組"],
-        assignee_ids=[1, 2, 3], due_date=None, requester="@yuan",
+        title="t",
+        description="d",
+        label_names=["Team::開發組"],
+        assignee_ids=[1, 2, 3],
+        due_date=None,
+        requester="@yuan",
     )
     assert res.missing_assignees == [3]
 
@@ -379,8 +399,13 @@ async def test_multi_assignee_discrepancy_detected() -> None:
 async def test_create_with_status_normalized_and_applied() -> None:
     b = FakeBackend(LABELS)
     res = await _client(b).create_issue(
-        title="t", description="d", label_names=[], assignee_ids=[],
-        due_date=None, requester="@yuan", status="doing",  # 大小寫不同 → 正規化解析
+        title="t",
+        description="d",
+        label_names=[],
+        assignee_ids=[],
+        due_date=None,
+        requester="@yuan",
+        status="doing",  # 大小寫不同 → 正規化解析
     )
     assert res.issue.status == "Doing"
     assert b.issue_statuses[res.issue.iid] == "Doing"
@@ -391,8 +416,13 @@ async def test_create_rejects_unknown_status_with_candidates() -> None:
     b = FakeBackend(LABELS)
     with pytest.raises(StatusNotFoundError) as ei:
         await _client(b).create_issue(
-            title="t", description="d", label_names=[], assignee_ids=[],
-            due_date=None, requester="@yuan", status="Inbx",
+            title="t",
+            description="d",
+            label_names=[],
+            assignee_ids=[],
+            due_date=None,
+            requester="@yuan",
+            status="Inbx",
         )
     assert "Inbox" in ei.value.candidates
     assert b.calls["create_issue"] == 0  # 先驗證再建卡，不留半成品
@@ -402,8 +432,13 @@ async def test_create_status_failure_reported_not_rolled_back() -> None:
     b = FakeBackend(LABELS)
     b.errors["set_issue_status"] = [GitLabBackendError(422, "x")]
     res = await _client(b).create_issue(
-        title="t", description="d", label_names=[], assignee_ids=[],
-        due_date=None, requester="@yuan", status="Doing",
+        title="t",
+        description="d",
+        label_names=[],
+        assignee_ids=[],
+        due_date=None,
+        requester="@yuan",
+        status="Doing",
     )
     assert res.issue.iid == 100  # 卡已建立
     assert res.missing_status == "Doing"
@@ -413,8 +448,14 @@ async def test_create_status_failure_reported_not_rolled_back() -> None:
 async def test_update_status_transition_and_diff() -> None:
     b = FakeBackend(LABELS)
     b.issues[42] = {
-        "iid": 42, "web_url": "u", "title": "t", "description": "d",
-        "labels": [], "assignees": [], "due_date": None, "state": "opened",
+        "iid": 42,
+        "web_url": "u",
+        "title": "t",
+        "description": "d",
+        "labels": [],
+        "assignees": [],
+        "due_date": None,
+        "state": "opened",
     }
     b.issue_statuses[42] = "Inbox"
     res = await _client(b).update_issue(42, status="doing")
@@ -427,8 +468,14 @@ async def test_update_status_transition_and_diff() -> None:
 async def test_update_same_status_is_noop() -> None:
     b = FakeBackend(LABELS)
     b.issues[42] = {
-        "iid": 42, "web_url": "u", "title": "t", "description": "d",
-        "labels": [], "assignees": [], "due_date": None, "state": "opened",
+        "iid": 42,
+        "web_url": "u",
+        "title": "t",
+        "description": "d",
+        "labels": [],
+        "assignees": [],
+        "due_date": None,
+        "state": "opened",
     }
     b.issue_statuses[42] = "Doing"
     res = await _client(b).update_issue(42, status="Doing")
@@ -439,8 +486,14 @@ async def test_update_same_status_is_noop() -> None:
 async def test_update_status_failure_reported() -> None:
     b = FakeBackend(LABELS)
     b.issues[42] = {
-        "iid": 42, "web_url": "u", "title": "舊", "description": "d",
-        "labels": [], "assignees": [], "due_date": None, "state": "opened",
+        "iid": 42,
+        "web_url": "u",
+        "title": "舊",
+        "description": "d",
+        "labels": [],
+        "assignees": [],
+        "due_date": None,
+        "state": "opened",
     }
     b.errors["set_issue_status"] = [GitLabBackendError(422, "x")]
     res = await _client(b).update_issue(42, title="新", status="Doing")
@@ -452,8 +505,14 @@ async def test_update_status_failure_reported() -> None:
 async def test_get_issue_enriched_with_status() -> None:
     b = FakeBackend(LABELS)
     b.issues[42] = {
-        "iid": 42, "web_url": "u", "title": "t", "description": None,
-        "labels": [], "assignees": [], "due_date": None, "state": "opened",
+        "iid": 42,
+        "web_url": "u",
+        "title": "t",
+        "description": None,
+        "labels": [],
+        "assignees": [],
+        "due_date": None,
+        "state": "opened",
     }
     b.issue_statuses[42] = "Waiting"
     issue = await _client(b).get_issue(42)
@@ -466,9 +525,14 @@ async def test_get_issue_enriched_with_status() -> None:
 async def test_update_scoped_exclusion_and_diff() -> None:
     b = FakeBackend(LABELS)
     b.issues[42] = {
-        "iid": 42, "web_url": "u", "title": "舊標題",
-        "description": "d", "labels": ["Team::開發組", "0913 一籌"],
-        "assignees": [], "due_date": None, "state": "opened",
+        "iid": 42,
+        "web_url": "u",
+        "title": "舊標題",
+        "description": "d",
+        "labels": ["Team::開發組", "0913 一籌"],
+        "assignees": [],
+        "due_date": None,
+        "state": "opened",
     }
     res = await _client(b).update_issue(42, add_labels=["Team::行政組"], title="新標題")
     assert set(res.issue.labels) == {"Team::行政組", "0913 一籌"}
@@ -482,8 +546,14 @@ async def test_update_scoped_exclusion_and_diff() -> None:
 async def test_update_no_change_returns_no_diff() -> None:
     b = FakeBackend(LABELS)
     b.issues[42] = {
-        "iid": 42, "web_url": "u", "title": "標題", "description": "d",
-        "labels": ["Team::開發組"], "assignees": [], "due_date": None, "state": "opened",
+        "iid": 42,
+        "web_url": "u",
+        "title": "標題",
+        "description": "d",
+        "labels": ["Team::開發組"],
+        "assignees": [],
+        "due_date": None,
+        "state": "opened",
     }
     res = await _client(b).update_issue(42, title="標題")  # 同名 → 無變更
     assert res.any_change() is False
@@ -496,12 +566,36 @@ async def test_update_no_change_returns_no_diff() -> None:
 async def test_open_only_excludes_review_and_closed() -> None:
     b = FakeBackend(LABELS)
     b.issues = {
-        1: {"iid": 1, "web_url": "u1", "title": "a", "description": None,
-            "labels": ["Team::行政組"], "assignees": [], "due_date": None, "state": "opened"},
-        2: {"iid": 2, "web_url": "u2", "title": "b", "description": None,
-            "labels": ["Team::行政組"], "assignees": [], "due_date": None, "state": "opened"},
-        3: {"iid": 3, "web_url": "u3", "title": "c", "description": None,
-            "labels": ["Team::行政組"], "assignees": [], "due_date": None, "state": "closed"},
+        1: {
+            "iid": 1,
+            "web_url": "u1",
+            "title": "a",
+            "description": None,
+            "labels": ["Team::行政組"],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
+        2: {
+            "iid": 2,
+            "web_url": "u2",
+            "title": "b",
+            "description": None,
+            "labels": ["Team::行政組"],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
+        3: {
+            "iid": 3,
+            "web_url": "u3",
+            "title": "c",
+            "description": None,
+            "labels": ["Team::行政組"],
+            "assignees": [],
+            "due_date": None,
+            "state": "closed",
+        },
     }
     b.issue_statuses = {1: "Doing", 2: "Review"}
     issues = await _client(b).search_issues(label_filters=["Team::行政組"], open_only=True)
@@ -512,10 +606,26 @@ async def test_open_only_excludes_review_and_closed() -> None:
 async def test_search_by_status_filter_matched_locally() -> None:
     b = FakeBackend(LABELS)
     b.issues = {
-        1: {"iid": 1, "web_url": "u1", "title": "a", "description": None,
-            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
-        2: {"iid": 2, "web_url": "u2", "title": "b", "description": None,
-            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
+        1: {
+            "iid": 1,
+            "web_url": "u1",
+            "title": "a",
+            "description": None,
+            "labels": [],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
+        2: {
+            "iid": 2,
+            "web_url": "u2",
+            "title": "b",
+            "description": None,
+            "labels": [],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
     }
     b.issue_statuses = {1: "Doing", 2: "Waiting"}
     issues = await _client(b).search_issues(status_filter="doing")  # 正規化解析
@@ -533,37 +643,77 @@ async def test_search_by_status_filter_matched_locally() -> None:
 async def test_title_query_substring_matched_locally_not_via_api() -> None:
     b = FakeBackend(LABELS)
     b.issues = {
-        1: {"iid": 1, "web_url": "u1", "title": "[場務組] 填預算", "description": None,
-            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
-        2: {"iid": 2, "web_url": "u2", "title": "場勘", "description": "回報前先確認預算上限",
-            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
-        3: {"iid": 3, "web_url": "u3", "title": "[議程組] 籌備時程表", "description": None,
-            "labels": [], "assignees": [], "due_date": None, "state": "closed"},
-        4: {"iid": 4, "web_url": "u4", "title": "Fix OpenVidu relay", "description": None,
-            "labels": [], "assignees": [], "due_date": None, "state": "opened"},
+        1: {
+            "iid": 1,
+            "web_url": "u1",
+            "title": "[場務組] 填預算",
+            "description": None,
+            "labels": [],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
+        2: {
+            "iid": 2,
+            "web_url": "u2",
+            "title": "場勘",
+            "description": "回報前先確認預算上限",
+            "labels": [],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
+        3: {
+            "iid": 3,
+            "web_url": "u3",
+            "title": "[議程組] 籌備時程表",
+            "description": None,
+            "labels": [],
+            "assignees": [],
+            "due_date": None,
+            "state": "closed",
+        },
+        4: {
+            "iid": 4,
+            "web_url": "u4",
+            "title": "Fix OpenVidu relay",
+            "description": None,
+            "labels": [],
+            "assignees": [],
+            "due_date": None,
+            "state": "opened",
+        },
     }
     c = _client(b)
 
     hits = await c.search_issues(title_query="預算")
     assert [i.iid for i in hits] == [1, 2]  # 子字串命中標題與描述
-    assert "search" not in b.last_filters   # 回歸防線：不得透傳 GitLab search=
+    assert "search" not in b.last_filters  # 回歸防線：不得透傳 GitLab search=
 
     hits = await c.search_issues(title_query="場務 預算")
-    assert [i.iid for i in hits] == [1]     # 多詞（空白分隔）＝ AND
+    assert [i.iid for i in hits] == [1]  # 多詞（空白分隔）＝ AND
 
     hits = await c.search_issues(title_query="時程表")
-    assert [i.iid for i in hits] == [3]     # 預設 state=all，已關卡也可搜到
+    assert [i.iid for i in hits] == [3]  # 預設 state=all，已關卡也可搜到
 
     hits = await c.search_issues(title_query="openvidu")
-    assert [i.iid for i in hits] == [4]     # 英文不分大小寫
+    assert [i.iid for i in hits] == [4]  # 英文不分大小寫
 
 
 # ------------------------------------------------------------------ #
 # NT-11：開著卡片查詢（2026-08-06 修訂：不限已過期）
 # ------------------------------------------------------------------ #
 def _bare_issue(iid: int, due: str | None, state: str = "opened", labels: list[str] | None = None) -> dict[str, Any]:
-    return {"iid": iid, "web_url": f"u{iid}", "title": f"t{iid}", "description": None,
-            "labels": labels or [], "assignees": [], "due_date": due, "state": state}
+    return {
+        "iid": iid,
+        "web_url": f"u{iid}",
+        "title": f"t{iid}",
+        "description": None,
+        "labels": labels or [],
+        "assignees": [],
+        "due_date": due,
+        "state": state,
+    }
 
 
 async def test_open_cards_carries_confidential_flag() -> None:
@@ -581,13 +731,13 @@ async def test_open_cards_carries_confidential_flag() -> None:
 async def test_open_cards_filters_and_sorts() -> None:
     b = FakeBackend(LABELS)
     b.issues = {
-        1: _bare_issue(1, "2026-08-01"),           # 未到期也列入
+        1: _bare_issue(1, "2026-08-01"),  # 未到期也列入
         2: _bare_issue(2, "2026-07-31"),
-        3: _bare_issue(3, "2026-07-25"),           # 過期最久 → 排最前
+        3: _bare_issue(3, "2026-07-25"),  # 過期最久 → 排最前
         4: _bare_issue(4, "2026-07-28", "closed"),  # 已關閉 → 排除
-        5: _bare_issue(5, None),                    # 無到期日也列入，殿後
-        6: _bare_issue(6, "2026-07-25"),            # 同日到期 → 以 iid 穩定排序
-        7: _bare_issue(7, "2026-07-20"),            # Review 不算開著（GL-22）→ 排除
+        5: _bare_issue(5, None),  # 無到期日也列入，殿後
+        6: _bare_issue(6, "2026-07-25"),  # 同日到期 → 以 iid 穩定排序
+        7: _bare_issue(7, "2026-07-20"),  # Review 不算開著（GL-22）→ 排除
     }
     b.issue_statuses = {1: "To Do", 2: "Doing", 3: "Inbox", 5: "Waiting", 7: "Review"}
     issues = await _client(b).open_cards()

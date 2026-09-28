@@ -45,9 +45,7 @@ class PhotoSearchArgs(BaseModel):
         description="描述照片內容的關鍵字（如 講者、工作坊、合照、茶點、螢幕；也可含活動/相簿名如 Camp 2026）"
     )
     orientation: str | None = Field(None, description="橫式='landscape'、直式='portrait'")
-    subject_type: str | None = Field(
-        None, description="主體類型：people／screen／object／food／space／text_signage"
-    )
+    subject_type: str | None = Field(None, description="主體類型：people／screen／object／food／space／text_signage")
     has_people: bool | None = Field(None, description="是否需要有人物入鏡")
     offset: int = Field(0, description="要跳過的筆數（要求下一批時用）")
 

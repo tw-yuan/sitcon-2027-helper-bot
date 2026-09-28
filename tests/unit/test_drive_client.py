@@ -183,12 +183,30 @@ async def test_no_widen_for_single_keyword() -> None:
 
 async def test_ranking_name_hits_then_modified() -> None:
     files = [
-        {"id": "a", "name": "無關.pdf", "parents": ["s27"], "mimeType": "application/pdf",
-         "webViewLink": "u", "modifiedTime": "2026-08-01T00:00:00Z"},
-        {"id": "b", "name": "場佈手冊(舊).pdf", "parents": ["s27"], "mimeType": "application/pdf",
-         "webViewLink": "u", "modifiedTime": "2025-01-01T00:00:00Z"},
-        {"id": "c", "name": "場佈手冊.pdf", "parents": ["s27"], "mimeType": "application/pdf",
-         "webViewLink": "u", "modifiedTime": "2026-07-01T00:00:00Z"},
+        {
+            "id": "a",
+            "name": "無關.pdf",
+            "parents": ["s27"],
+            "mimeType": "application/pdf",
+            "webViewLink": "u",
+            "modifiedTime": "2026-08-01T00:00:00Z",
+        },
+        {
+            "id": "b",
+            "name": "場佈手冊(舊).pdf",
+            "parents": ["s27"],
+            "mimeType": "application/pdf",
+            "webViewLink": "u",
+            "modifiedTime": "2025-01-01T00:00:00Z",
+        },
+        {
+            "id": "c",
+            "name": "場佈手冊.pdf",
+            "parents": ["s27"],
+            "mimeType": "application/pdf",
+            "webViewLink": "u",
+            "modifiedTime": "2026-07-01T00:00:00Z",
+        },
     ]
     result = await _service(files=files).search(["場佈"])
     assert [f.file_id for f in result.files] == ["c", "b", "a"]  # 檔名命中在前，新→舊
@@ -206,8 +224,11 @@ FOLDER_SHORTCUT = {
     "shortcutDetails": {"targetId": "x1", "targetMimeType": FOLDER_MIME},
 }
 EXT_FILE = {
-    "id": "xf1", "name": "議程表.gdoc", "parents": ["x1"],
-    "mimeType": "application/vnd.google-apps.document", "webViewLink": "ux",
+    "id": "xf1",
+    "name": "議程表.gdoc",
+    "parents": ["x1"],
+    "mimeType": "application/vnd.google-apps.document",
+    "webViewLink": "ux",
 }
 
 
@@ -315,8 +336,12 @@ async def test_resolve_marks_private_by_path() -> None:
 
 async def test_resolve_follows_file_shortcut_to_target() -> None:
     sc = {
-        "id": "sf1", "name": "重要文件（捷徑）", "parents": ["c1"], "mimeType": SHORTCUT_MIME,
-        "webViewLink": "us", "shortcutDetails": {"targetId": "d1", "targetMimeType": GDOC},
+        "id": "sf1",
+        "name": "重要文件（捷徑）",
+        "parents": ["c1"],
+        "mimeType": SHORTCUT_MIME,
+        "webViewLink": "us",
+        "shortcutDetails": {"targetId": "d1", "targetMimeType": GDOC},
     }
     svc = _service(files=[*READ_FILES, sc])
     meta, private = await svc.resolve_for_read("sf1")
@@ -330,8 +355,12 @@ async def test_resolve_shortcut_target_outside_scope_uses_shortcut_path() -> Non
     """目標在範圍外（例如另一個共用硬碟）→ 沿用捷徑所在路徑；（私）隨捷徑路徑判定。"""
     ext = {"id": "xd", "name": "外部文件.gdoc", "parents": ["ext"], "mimeType": GDOC, "webViewLink": "ux"}
     sc = {
-        "id": "sf2", "name": "外部文件", "parents": ["p1"], "mimeType": SHORTCUT_MIME,
-        "webViewLink": "us", "shortcutDetails": {"targetId": "xd", "targetMimeType": GDOC},
+        "id": "sf2",
+        "name": "外部文件",
+        "parents": ["p1"],
+        "mimeType": SHORTCUT_MIME,
+        "webViewLink": "us",
+        "shortcutDetails": {"targetId": "xd", "targetMimeType": GDOC},
     }
     svc = _service(files=[ext, sc])
     meta, private = await svc.resolve_for_read("sf2")

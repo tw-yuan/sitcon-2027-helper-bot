@@ -189,9 +189,7 @@ class Roster:
 
     def __init__(self, members: list[Member]) -> None:
         self._members = members
-        self._by_tid: dict[int, Member] = {
-            m.telegram_id: m for m in members if m.telegram_id is not None
-        }
+        self._by_tid: dict[int, Member] = {m.telegram_id: m for m in members if m.telegram_id is not None}
 
     @property
     def members(self) -> list[Member]:
@@ -267,9 +265,7 @@ class RosterService:
 
     def _is_fresh(self) -> bool:
         return (
-            self._roster is not None
-            and self._loaded_at is not None
-            and (self._clock() - self._loaded_at) < self._ttl
+            self._roster is not None and self._loaded_at is not None and (self._clock() - self._loaded_at) < self._ttl
         )
 
     async def get(self, *, force: bool = False) -> Roster:
@@ -358,9 +354,7 @@ class GoogleSheetsFetcher:
         return await asyncio.to_thread(self._fetch_sync)
 
 
-def build_roster_service(
-    sa_json_path: str, sheet_id: str, gid: int, ttl_seconds: int
-) -> RosterService:
+def build_roster_service(sa_json_path: str, sheet_id: str, gid: int, ttl_seconds: int) -> RosterService:
     fetcher = GoogleSheetsFetcher(sa_json_path, sheet_id, gid)
     return RosterService(fetcher, ttl_seconds)
 

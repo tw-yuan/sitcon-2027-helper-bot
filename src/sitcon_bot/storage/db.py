@@ -22,6 +22,7 @@ def _ensure_parent_dir(path: str) -> None:
     if path != ":memory:":
         Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
+
 # SPEC 第 12 章：授權清單與稽核兩張表（欄位與型別逐一對應）。
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS authorized_groups (

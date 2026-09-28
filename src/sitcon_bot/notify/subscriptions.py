@@ -70,9 +70,7 @@ class SubscriptionStore:
             """,
             (chat_id, title, joined, thread_id, by, now),
         )
-        log.info(
-            "里程碑預告訂閱 chat_id=%s thread_id=%s teams=%r by=%s", chat_id, thread_id, joined or "<全部>", by
-        )
+        log.info("里程碑預告訂閱 chat_id=%s thread_id=%s teams=%r by=%s", chat_id, thread_id, joined or "<全部>", by)
         return Subscription(
             chat_id=chat_id,
             title=title,

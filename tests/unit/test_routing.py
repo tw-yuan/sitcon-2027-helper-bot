@@ -18,9 +18,7 @@ TRIGGER = "小石"
 
 
 def _classify(text: str, *, mention: bool = False, reply: bool = False):
-    return classify_trigger(
-        text, mentions_bot=mention, reply_to_bot=reply, trigger_name=TRIGGER, bot_username=BOT
-    )
+    return classify_trigger(text, mentions_bot=mention, reply_to_bot=reply, trigger_name=TRIGGER, bot_username=BOT)
 
 
 # ------------------------------------------------------------------ #
@@ -109,10 +107,7 @@ def test_private_any_message_gets_notice() -> None:
 
 
 def test_private_authorize_redirect() -> None:
-    assert (
-        _route("private", True, False, Kind.COMMAND, "authorize")
-        is Action.PRIVATE_AUTHORIZE_REDIRECT
-    )
+    assert _route("private", True, False, Kind.COMMAND, "authorize") is Action.PRIVATE_AUTHORIZE_REDIRECT
 
 
 # --- 未授權群組（AUTH-4）---

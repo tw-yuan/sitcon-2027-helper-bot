@@ -97,8 +97,9 @@ def _fetch_response() -> Any:
                 type="text",
                 text="這頁在講 SITCON 2026。",
                 citations=[
-                    SimpleNamespace(type="char_location", document_title="Jam the Chaos - SITCON 2026",
-                                    cited_text="2026/03/28")
+                    SimpleNamespace(
+                        type="char_location", document_title="Jam the Chaos - SITCON 2026", cited_text="2026/03/28"
+                    )
                 ],
             ),
         ],

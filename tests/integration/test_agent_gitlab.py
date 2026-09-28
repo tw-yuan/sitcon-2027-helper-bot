@@ -94,11 +94,18 @@ async def test_uc1_create_issue_auto_dispatch() -> None:
             LLMResponse(
                 text=None,
                 tool_calls=[ToolCall("c1", "gitlab_create_issue", {"title": "官網倒數計時器壞了", "team": "開發組"})],
-                usage=Usage(0, 0), stop_reason="tool_use", model="m", raw_assistant=["raw"],
+                usage=Usage(0, 0),
+                stop_reason="tool_use",
+                model="m",
+                raw_assistant=["raw"],
             ),
             LLMResponse(
                 text="✅ 已建立 #100，指派給開發組組長 Yuan",
-                tool_calls=[], usage=Usage(0, 0), stop_reason="end_turn", model="m", raw_assistant=["t"],
+                tool_calls=[],
+                usage=Usage(0, 0),
+                stop_reason="end_turn",
+                model="m",
+                raw_assistant=["t"],
             ),
         ]
     )

@@ -174,9 +174,7 @@ async def test_same_chat_is_serialized() -> None:
     gw, _ = _gateway(probe)
     msgs = [_Msg(_Chat(-100), 1), _Msg(_Chat(-100), 2), _Msg(_Chat(-100), 3)]
 
-    await asyncio.wait_for(
-        asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT
-    )
+    await asyncio.wait_for(asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT)
 
     assert probe.peak == 1  # 同一對話一次只跑一個
     assert probe.order == [1, 2, 3]  # 且維持送達順序
@@ -188,9 +186,7 @@ async def test_same_chat_parallel_when_serialization_disabled() -> None:
     gw, _ = _gateway(probe, serialize=False)
     msgs = [_Msg(_Chat(-100), 1), _Msg(_Chat(-100), 2), _Msg(_Chat(-100), 3)]
 
-    await asyncio.wait_for(
-        asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT
-    )
+    await asyncio.wait_for(asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT)
     assert probe.peak == 3
 
 
@@ -200,9 +196,7 @@ async def test_different_chats_run_in_parallel() -> None:
     msgs = [_Msg(_Chat(-100), 1), _Msg(_Chat(-200), 2), _Msg(_Chat(-300), 3)]
 
     started = time.monotonic()
-    await asyncio.wait_for(
-        asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT
-    )
+    await asyncio.wait_for(asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT)
     elapsed = time.monotonic() - started
 
     assert probe.peak == 3
@@ -218,9 +212,7 @@ async def test_forum_topics_in_same_chat_run_in_parallel() -> None:
         _Msg(_Chat(-100), 2, message_thread_id=22),
     ]
 
-    await asyncio.wait_for(
-        asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT
-    )
+    await asyncio.wait_for(asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT)
     assert probe.peak == 2
 
 
@@ -229,9 +221,7 @@ async def test_global_agent_turn_cap() -> None:
     gw, _ = _gateway(probe, agent_turns=2)
     msgs = [_Msg(_Chat(-100 * i), i) for i in range(1, 6)]
 
-    await asyncio.wait_for(
-        asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT
-    )
+    await asyncio.wait_for(asyncio.gather(*(gw._handle_business(m, m.text) for m in msgs)), timeout=TIMEOUT)
     assert probe.peak == 2  # 五個不同群，但全域只放行兩個
 
 
@@ -251,8 +241,15 @@ async def test_queued_messages_get_immediate_receipt_reaction() -> None:
 # 快取 single-flight
 # ------------------------------------------------------------------ #
 ROSTER_HEADER = [
-    "nickname", "gitlab_username", "gitlab_id", "telegram_username", "telegram_id",
-    "role", "position", "other_role", "email",
+    "nickname",
+    "gitlab_username",
+    "gitlab_id",
+    "telegram_username",
+    "telegram_id",
+    "role",
+    "position",
+    "other_role",
+    "email",
 ]
 ROSTER_ROW = ["阿石", "shi", "1001", "shi_tg", "555", "開發組", "組長", "", "a@b.c"]
 
@@ -288,8 +285,18 @@ async def test_roster_force_still_refetches() -> None:
 
 
 PHOTO_HEADER = [
-    "photo_id", "photo_url", "image_preview_url", "album_title", "subject_type", "photographer",
-    "scene_tags", "mood_tags", "recommended_uses", "orientation", "visual_description", "people_count",
+    "photo_id",
+    "photo_url",
+    "image_preview_url",
+    "album_title",
+    "subject_type",
+    "photographer",
+    "scene_tags",
+    "mood_tags",
+    "recommended_uses",
+    "orientation",
+    "visual_description",
+    "people_count",
 ]
 PHOTO_ROW = ["1", "https://flickr/1", "https://img/1", "Camp", "people", "p", "講者", "", "", "landscape", "台上", "1"]
 

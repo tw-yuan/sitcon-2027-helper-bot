@@ -145,7 +145,9 @@ async def test_update_event_attendee_merge() -> None:
     gw = FakeGateway()
     svc = _service(gw)
     ev = await svc.create_event(
-        summary="x", start="2026-08-15 17:00", end="2026-08-15 18:00",
+        summary="x",
+        start="2026-08-15 17:00",
+        end="2026-08-15 18:00",
         attendees=["a@x.tw", "b@x.tw"],
     )
     await svc.update_event(ev.id, add_attendees=["c@x.tw"], remove_attendees=["A@x.tw"])  # 大小寫不敏感
@@ -189,9 +191,7 @@ async def test_create_tool_no_invite_mail_when_send_updates_none() -> None:
     svc = CalendarService(gw, calendar_id="primary", tz="Asia/Taipei", notifies_attendees=False)
     tool = CalendarCreateEventTool(svc)
     reply = await tool.run(
-        CreateEventArgs(
-            title="x", start="2026-08-15 17:00", end="2026-08-15 20:00", attendees=["a@x.tw"]
-        ),
+        CreateEventArgs(title="x", start="2026-08-15 17:00", end="2026-08-15 20:00", attendees=["a@x.tw"]),
         CTX,
     )
     assert "未寄邀請信" in reply
@@ -221,8 +221,9 @@ async def test_update_tool_reports() -> None:
     svc = _service(gw)
     ev = await svc.create_event(summary="舊", start="2026-08-15 17:00", end="2026-08-15 18:00")
     tool = CalendarUpdateEventTool(svc)
-    reply = await tool.run(UpdateEventArgs(event_id=ev.id, title="新", start="2026-08-16 17:00",
-                                           end="2026-08-16 18:00"), CTX)
+    reply = await tool.run(
+        UpdateEventArgs(event_id=ev.id, title="新", start="2026-08-16 17:00", end="2026-08-16 18:00"), CTX
+    )
     assert "✅ 已更新活動" in reply
     assert "2026-08-16T17:00" in reply
 

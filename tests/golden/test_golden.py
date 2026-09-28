@@ -39,9 +39,18 @@ from sitcon_bot.services.llm.base import Message, TextBlock, build_llm_client
 GOLDEN_FILE = Path(__file__).parent / "golden.yaml"
 
 TOOL_CLASSES = [
-    GitlabCreateIssueTool, GitlabUpdateIssueTool, GitlabCommentIssueTool, GitlabGetIssueTool,
-    GitlabSearchIssuesTool, ResolvePersonTool, DriveSearchTool, DriveReadFileTool,
-    HackmdCreateNoteTool, HackmdSearchNotesTool, HackmdGetNoteTool, HackmdUpdateNoteTool,
+    GitlabCreateIssueTool,
+    GitlabUpdateIssueTool,
+    GitlabCommentIssueTool,
+    GitlabGetIssueTool,
+    GitlabSearchIssuesTool,
+    ResolvePersonTool,
+    DriveSearchTool,
+    DriveReadFileTool,
+    HackmdCreateNoteTool,
+    HackmdSearchNotesTool,
+    HackmdGetNoteTool,
+    HackmdUpdateNoteTool,
 ]
 ALL_SPECS = [c.spec() for c in TOOL_CLASSES] + [ASK_USER_SPEC]
 KNOWN_TOOLS = {s.name for s in ALL_SPECS}
@@ -123,12 +132,36 @@ async def _prompt_data() -> PromptData:
     labels = [f"Team::{t}組" for t in teams] + ["0913 一籌", "0110 站立會議"]
     statuses = ["Inbox", "Waiting", "Doing", "Review", "To Do"]  # native status（2026-08-17 修訂）
     roster = [
-        {"nickname": "Yuan", "gitlab_username": "yuan_tw", "gitlab_id": 1, "telegram_username": "yuan",
-         "telegram_id": 100, "role": "開發組", "position": "組長", "other_role": None},
-        {"nickname": "Leaf", "gitlab_username": "leaf", "gitlab_id": 2, "telegram_username": "leaf",
-         "telegram_id": 101, "role": "行政組", "position": "組長", "other_role": None},
-        {"nickname": "Amy", "gitlab_username": "amy", "gitlab_id": 3, "telegram_username": "amy",
-         "telegram_id": 102, "role": None, "position": "總召", "other_role": None},
+        {
+            "nickname": "Yuan",
+            "gitlab_username": "yuan_tw",
+            "gitlab_id": 1,
+            "telegram_username": "yuan",
+            "telegram_id": 100,
+            "role": "開發組",
+            "position": "組長",
+            "other_role": None,
+        },
+        {
+            "nickname": "Leaf",
+            "gitlab_username": "leaf",
+            "gitlab_id": 2,
+            "telegram_username": "leaf",
+            "telegram_id": 101,
+            "role": "行政組",
+            "position": "組長",
+            "other_role": None,
+        },
+        {
+            "nickname": "Amy",
+            "gitlab_username": "amy",
+            "gitlab_id": 3,
+            "telegram_username": "amy",
+            "telegram_id": 102,
+            "role": None,
+            "position": "總召",
+            "other_role": None,
+        },
     ]
     charter = (
         "## 開發組\n官網、報名系統、內部工具與資訊基礎設施的開發維運。\n"

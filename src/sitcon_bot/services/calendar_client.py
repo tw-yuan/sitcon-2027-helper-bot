@@ -269,15 +269,24 @@ class GoogleCalendarGateway:
             raise
 
     def _insert_sync(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        req = self._service_or_build().events().insert(
-            calendarId=calendar_id, body=body, conferenceDataVersion=1, sendUpdates=self._send_updates
+        req = (
+            self._service_or_build()
+            .events()
+            .insert(calendarId=calendar_id, body=body, conferenceDataVersion=1, sendUpdates=self._send_updates)
         )
         return self._execute(req)
 
     def _patch_sync(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        req = self._service_or_build().events().patch(
-            calendarId=calendar_id, eventId=event_id, body=body, conferenceDataVersion=1,
-            sendUpdates=self._send_updates,
+        req = (
+            self._service_or_build()
+            .events()
+            .patch(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=body,
+                conferenceDataVersion=1,
+                sendUpdates=self._send_updates,
+            )
         )
         return self._execute(req)
 
@@ -292,24 +301,28 @@ class GoogleCalendarGateway:
                 return None
             raise
 
-    def _list_sync(
-        self, calendar_id: str, time_min: str, time_max: str, query: str | None
-    ) -> list[dict[str, Any]]:
-        req = self._service_or_build().events().list(
-            calendarId=calendar_id,
-            timeMin=time_min,
-            timeMax=time_max,
-            q=query,
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=_LIST_MAX,
+    def _list_sync(self, calendar_id: str, time_min: str, time_max: str, query: str | None) -> list[dict[str, Any]]:
+        req = (
+            self._service_or_build()
+            .events()
+            .list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                q=query,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=_LIST_MAX,
+            )
         )
         resp = self._execute(req)
         return list(resp.get("items", []))
 
     def _delete_sync(self, calendar_id: str, event_id: str) -> None:
-        req = self._service_or_build().events().delete(
-            calendarId=calendar_id, eventId=event_id, sendUpdates=self._send_updates
+        req = (
+            self._service_or_build()
+            .events()
+            .delete(calendarId=calendar_id, eventId=event_id, sendUpdates=self._send_updates)
         )
         self._execute(req)
 

@@ -322,9 +322,7 @@ class DriveSearchService:
         widened = False
         if not matches and len(clean_kws) > 1:
             # 全部符合 0 筆 → 放寬為任一符合（DR-3 修訂），排序會把命中多的排前面
-            matches = await self._search_in_scope(
-                build_search_query(clean_kws, require_all=False), selected_root_ids
-            )
+            matches = await self._search_in_scope(build_search_query(clean_kws, require_all=False), selected_root_ids)
             widened = bool(matches)
 
         matches = self._rank(matches, clean_kws)
@@ -346,9 +344,7 @@ class DriveSearchService:
         # 實際 API 次數不變（共用祖先只查一次），但延遲從「相加」變成「取最深的那條」。
         candidates = [(f, (f.get("parents") or [None])[0]) for f in raw]
         candidates = [(f, parent) for f, parent in candidates if parent]
-        paths = await asyncio.gather(
-            *(self._scope_path(parent, selected_root_ids) for _f, parent in candidates)
-        )
+        paths = await asyncio.gather(*(self._scope_path(parent, selected_root_ids) for _f, parent in candidates))
         return [
             self._to_file(f, path)
             for (f, _parent), path in zip(candidates, paths, strict=True)
@@ -611,9 +607,7 @@ class GoogleDriveGateway:
 
     async def list_children(self, folder_id: str) -> list[dict[str, Any]]:
         query = f"'{_escape(folder_id)}' in parents and trashed = false"
-        return await asyncio.to_thread(
-            lambda: self._list_sync(query, order_by="folder,name", cap=500)
-        )
+        return await asyncio.to_thread(lambda: self._list_sync(query, order_by="folder,name", cap=500))
 
     async def fetch_text(self, file_id: str, export_mime: str | None) -> str:
         return await asyncio.to_thread(self._fetch_text_sync, file_id, export_mime)

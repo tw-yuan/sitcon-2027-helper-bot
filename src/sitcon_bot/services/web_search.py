@@ -232,7 +232,11 @@ class WebSearchService:
         latency = time.monotonic() - started
         log.info(
             "web_search model=%s searches=%d fetches=%d latency=%.2fs errors=%s",
-            self._model, searches, fetches, latency, ",".join(tool_errors) or "-",
+            self._model,
+            searches,
+            fetches,
+            latency,
+            ",".join(tool_errors) or "-",
         )
         return WebSearchOutcome(
             text="".join(text_parts).strip(),
