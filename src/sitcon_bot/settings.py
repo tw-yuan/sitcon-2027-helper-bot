@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # openai_compat 專用；留空＝不帶。Codex 的 fast mode 即 service_tier="fast"，
     # 官方 API 另有 priority／flex。不支援時 provider 會回 400，改回留空即可。
     llm_service_tier: str = ""
+    # 使用者附的圖片（照片、圖片檔、貼圖、影片縮圖）是否送給模型做視覺處理。
+    # 模型不支援時呼叫會被拒，agent 會自動拿掉圖片重送一次；確定不支援就設 false 省那一趟。
+    llm_vision: bool = True
 
     # --- 網路搜尋（獨立憑證，與主 LLM provider 脫鉤）---
     # 主 LLM 只看到一個普通工具 web_search，背後另開一次 Anthropic 子呼叫，用 server-side
@@ -202,7 +205,7 @@ class Settings(BaseSettings):
             f"  Telegram      : token={mask(self.telegram_bot_token)}  admin_id={self.telegram_admin_id}",
             f"  觸發詞         : {self.bot_trigger_name}",
             f"  LLM           : provider={self.llm_provider}  model={self.llm_model}  thinking={self.llm_thinking}"
-            f"  tier={self.llm_service_tier or '<預設>'}",
+            f"  tier={self.llm_service_tier or '<預設>'}  vision={'on' if self.llm_vision else 'off'}",
             f"                  api_key={mask(self.llm_api_key)}  base_url={self.llm_base_url or '<預設>'}",
             f"  GitLab        : {self.gitlab_url}  project={self.gitlab_project}  token={mask(self.gitlab_token)}",
             f"  Drive         : drive_id={self.drive_shared_drive_id}  scope={self.drive_scope_folder_names}",

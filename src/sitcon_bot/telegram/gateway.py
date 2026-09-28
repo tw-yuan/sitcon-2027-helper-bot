@@ -52,8 +52,10 @@ from ..agent.proofread import ProofreadHandler
 from ..auth.groups import GroupStore
 from ..concurrency import KeyedLock
 from ..domain.proofread import proofread_targets
+from ..services.attachments import Attachment, AttachmentStore
 from ..settings import Settings
 from ..storage.audit import AuditLog
+from .attachments import extract_attachments
 from .commands import CommandHandlers
 from .formatting import escape_html, split_message
 from .routing import Action, classify_trigger, command_args, route
@@ -78,6 +80,10 @@ RETRY_PREFIX = "retry:"
 RETRY_BUTTON_TEXT = "🔄 重試"
 RETRY_IN_PROGRESS = "🔄 重試中…"
 RETRY_GONE = "這個重試按鈕已過期或正在重試中，請重新傳送原本的訊息。"
+
+# 相簿：觸發訊息到達後稍等其餘各則進來再收集；暫存參照的存活時間
+ALBUM_SETTLE = 1.2  # 秒
+ALBUM_TTL = 120.0  # 秒
 
 
 class RetryStore:
@@ -127,6 +133,34 @@ class BusinessRequest:
     reply_context: str | None = None
     # 串流回呼（gateway 於回合開跑前填入 _DraftStreamer）；agent 以累積全文呼叫
     on_partial: Any = None
+    # 附件（本則、被回覆訊息、同一相簿），已登記於 AttachmentStore
+    attachments: list[Attachment] = field(default_factory=list)
+
+
+class _AlbumBuffer:
+    """相簿（media group）各則訊息的附件參照暫存。
+
+    Telegram 把相簿拆成多則訊息分別送達，說明文字（含「小石」觸發詞）只在其中一則；
+    為了讓觸發訊息拿得到同相簿的其他圖，授權群組內帶 media_group_id 的訊息附件參照
+    暫存於記憶體（只有 file_id 等參照、不含內容，不落地、不記日誌），ALBUM_TTL 秒後丟棄。
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._groups: dict[tuple[int, str], tuple[float, dict[int, list[Attachment]]]] = {}
+
+    def put(self, chat_id: int, group_id: str, message_id: int, atts: list[Attachment]) -> None:
+        now = self._clock()
+        for key in [k for k, (at, _) in self._groups.items() if now - at > ALBUM_TTL]:
+            self._groups.pop(key, None)
+        _, items = self._groups.setdefault((chat_id, group_id), (now, {}))
+        items[message_id] = atts
+
+    def siblings(self, chat_id: int, group_id: str, exclude: int) -> list[Attachment]:
+        entry = self._groups.get((chat_id, group_id))
+        if entry is None:
+            return []
+        return [a for mid, atts in sorted(entry[1].items()) if mid != exclude for a in atts]
 
 
 class _DraftStreamer:
@@ -199,8 +233,13 @@ class Gateway:
         pending_store: PendingStore | None = None,
         history_store: HistoryStore | None = None,
         proofreader: ProofreadHandler | None = None,
+        attachments: AttachmentStore | None = None,
+        album_settle: float = ALBUM_SETTLE,
     ) -> None:
         self._settings = settings
+        self._attachments = attachments
+        self._albums = _AlbumBuffer()
+        self._album_settle = album_settle
         self._groups = groups
         self._audit = audit
         self._commands = commands
@@ -239,6 +278,8 @@ class Gateway:
         app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, self._on_message))
         app.add_handler(CallbackQueryHandler(self._on_callback, pattern=f"^{RETRY_PREFIX}"))
         self._app = app
+        if self._attachments is not None:
+            self._attachments.bind_downloader(self._download_file)
 
         await app.initialize()
         me = await app.bot.get_me()
@@ -294,6 +335,11 @@ class Gateway:
             kind=kind,
             command=command,
         )
+        if message.media_group_id and self._attachments is not None and self._groups.is_authorized(message.chat.id):
+            # 相簿各則都先記參照（多數不含觸發詞，下面就會被 IGNORE），供觸發訊息收齊整本相簿
+            self._albums.put(
+                message.chat.id, message.media_group_id, message.message_id, extract_attachments(message, "同一則相簿")
+            )
         if action is Action.IGNORE:
             return  # 沉默丟棄（LOG-3：不記錄非觸發訊息）
 
@@ -407,6 +453,7 @@ class Gateway:
         )
         # 收到即回饋：👀 reaction + typing（不送佔位訊息，避免使用者漏收最終回覆通知）
         await self._react(req.chat_id, req.trigger_message_id, REACT_RECEIVED)
+        req.attachments = await self._collect_attachments(message)
         try:
             result = await self._run_business(req)
         except Exception:  # 業務層未預期錯誤：回一則錯誤說明，不中斷長輪詢
@@ -428,6 +475,33 @@ class Gateway:
         # 業務回覆為 LLM 產生的動態內容 → escape 後才以 HTML 送出（避免破壞 HTML / 注入）
         reply_mid = await self._reply(message, escape_html(result.reply), reply_markup=self._retry_markup(req, result))
         await self._finalize(req, result, reply_mid)
+
+    async def _collect_attachments(self, message: Message) -> list[Attachment]:
+        """本則＋同相簿＋被回覆訊息（及其相簿）的附件，登記後回傳（帶代號）。"""
+        if self._attachments is None:
+            return []
+        chat_id = message.chat.id
+        atts = extract_attachments(message, "本則訊息")
+        if message.media_group_id:
+            await asyncio.sleep(self._album_settle)  # 等相簿其餘各則送達
+            atts += self._albums.siblings(chat_id, message.media_group_id, exclude=message.message_id)
+        reply_to = message.reply_to_message
+        if reply_to is not None:
+            atts += extract_attachments(reply_to, "被回覆的訊息")
+            if reply_to.media_group_id:
+                atts += self._albums.siblings(chat_id, reply_to.media_group_id, exclude=reply_to.message_id)
+        seen: set[str] = set()
+        out: list[Attachment] = []
+        for a in atts:
+            if a.file_id not in seen:
+                seen.add(a.file_id)
+                out.append(self._attachments.add(chat_id, a))
+        return out
+
+    async def _download_file(self, file_id: str) -> bytes:
+        assert self._app is not None
+        tg_file = await self._app.bot.get_file(file_id)
+        return bytes(await tg_file.download_as_bytearray())
 
     async def _run_business(self, req: BusinessRequest) -> BusinessResult:
         # 串流草稿：每回合（含重試）配一個新 streamer；停用或不支援時為 None（agent 即不串流）

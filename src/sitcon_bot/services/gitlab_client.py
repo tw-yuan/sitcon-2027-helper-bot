@@ -118,8 +118,7 @@ class Issue:
     @classmethod
     def from_raw(cls, d: dict[str, Any]) -> Issue:
         assignees = [
-            Assignee(id=a["id"], username=a.get("username"), name=a.get("name"))
-            for a in (d.get("assignees") or [])
+            Assignee(id=a["id"], username=a.get("username"), name=a.get("name")) for a in (d.get("assignees") or [])
         ]
         return cls(
             iid=d["iid"],
@@ -302,6 +301,7 @@ class GitLabBackend(Protocol):
     def list_issue_links(self, iid: int) -> list[dict[str, Any]]: ...
     def create_issue_link(self, iid: int, target_iid: int, link_type: str) -> None: ...
     def delete_issue_link(self, iid: int, issue_link_id: int) -> None: ...
+    def upload_file(self, filename: str, data: bytes) -> dict[str, Any]: ...
 
 
 _Clock = Callable[[], float]
@@ -516,7 +516,10 @@ class GitLabClient:
         if missing or missing_labels or missing_status:
             log.warning(
                 "建卡 #%s 套用落差：labels=%s assignees=%s status=%s（多為權限不足或 assignee 非專案成員）",
-                issue.iid, missing_labels, missing, missing_status,
+                issue.iid,
+                missing_labels,
+                missing,
+                missing_status,
             )
         return CreateResult(
             issue=issue,
@@ -539,11 +542,13 @@ class GitLabClient:
         clear_due_date: bool = False,
         requester: str | None = None,
         status: str | None = None,
+        append_description: str | None = None,
     ) -> UpdateResult:
         """編輯卡片（GL-14）。labels 以最終集合覆寫（GL-13）；不自己發 state_event（GL-16）。
 
         status 為 native status（GraphQL 另行設定；與現值相同時不打 API）。
         編輯描述時比照建卡/留言附上來源標註（GL-8），保留可追溯性、避免整段覆寫洗掉標註。
+        append_description：接在描述最後（附件用）；沒有同時改寫描述時保留現有描述原文、不重複加標註。
         """
         before = await self.get_issue(iid)
         payload: dict[str, Any] = {}
@@ -557,6 +562,9 @@ class GitLabClient:
             payload["title"] = title
         if description is not None:
             payload["description"] = with_attribution(description, requester) if requester else description
+        if append_description:
+            base = payload.get("description", before.description or "").rstrip()
+            payload["description"] = f"{base}\n\n{append_description}" if base else append_description
 
         add_canon: list[str] = []
         if add_labels or remove_labels:
@@ -609,7 +617,10 @@ class GitLabClient:
         if result.missing_labels or result.missing_assignees or result.missing_status:
             log.warning(
                 "編輯 #%s 套用落差：labels=%s assignees=%s status=%s",
-                iid, result.missing_labels, result.missing_assignees, result.missing_status,
+                iid,
+                result.missing_labels,
+                result.missing_assignees,
+                result.missing_status,
             )
         return result
 
@@ -628,6 +639,16 @@ class GitLabClient:
             description_changed=(before.description or "") != (after.description or ""),
             due_date_changed=(before.due_date or "") != (after.due_date or ""),
         )
+
+    # -------------------------- 附件 -------------------------- #
+    async def upload_file(self, filename: str, data: bytes) -> str:
+        """上傳檔案到專案 uploads，回傳可嵌入描述／留言的 markdown（圖片為 ![..](..)，其餘為連結）。
+
+        只是上傳、不會自己出現在任何卡片上；呼叫端把 markdown 放進描述或留言才算附上。
+        """
+        raw = await self._call(self._b.upload_file, filename, data)
+        markdown = raw.get("markdown") or f"[{filename}]({raw.get('url', '')})"
+        return str(markdown)
 
     # -------------------------- 留言 -------------------------- #
     async def comment_issue(self, iid: int, body: str, *, requester: str) -> Note:
@@ -681,10 +702,7 @@ class GitLabClient:
         issues = [Issue.from_raw(r) for r in raw]
         if title_query:
             terms = [t.casefold() for t in title_query.split()]
-            issues = [
-                i for i in issues
-                if all(t in f"{i.title}\n{i.description or ''}".casefold() for t in terms)
-            ]
+            issues = [i for i in issues if all(t in f"{i.title}\n{i.description or ''}".casefold() for t in terms)]
         await self._enrich_statuses(issues)
         if status_canon is not None:
             issues = [i for i in issues if i.status == status_canon]
@@ -839,9 +857,7 @@ class PyGitlabBackend:
         except requests.exceptions.RequestException as exc:
             raise GitLabBackendError(None, f"GitLab GraphQL 連線錯誤：{exc}", retryable=True) from exc
         if resp.status_code != 200:
-            raise GitLabBackendError(
-                resp.status_code, f"GitLab GraphQL HTTP {resp.status_code}：{resp.text[:200]}"
-            )
+            raise GitLabBackendError(resp.status_code, f"GitLab GraphQL HTTP {resp.status_code}：{resp.text[:200]}")
         body = resp.json()
         if body.get("errors"):
             msgs = "；".join(str(e.get("message", e)) for e in body["errors"])
@@ -850,7 +866,7 @@ class PyGitlabBackend:
 
     @staticmethod
     def _widget_status_name(container: dict[str, Any] | None) -> str | None:
-        for widget in ((container or {}).get("widgets") or []):
+        for widget in (container or {}).get("widgets") or []:
             status = widget.get("status")
             if status and status.get("name"):
                 return str(status["name"])
@@ -870,14 +886,14 @@ class PyGitlabBackend:
         for i in range(0, len(iids), self._GQL_CHUNK):
             chunk = [str(x) for x in iids[i : i + self._GQL_CHUNK]]
             data = self._graphql(self._Q_ITEM_STATUSES, {"p": self._project_path, "iids": chunk})
-            nodes = (((data.get("project") or {}).get("workItems") or {}).get("nodes") or [])
+            nodes = ((data.get("project") or {}).get("workItems") or {}).get("nodes") or []
             for node in nodes:
                 out[int(node["iid"])] = self._widget_status_name(node)
         return out
 
     def set_issue_status(self, iid: int, status: str) -> str:
         data = self._graphql(self._Q_ITEM_ID, {"p": self._project_path, "iid": str(iid)})
-        nodes = (((data.get("project") or {}).get("workItems") or {}).get("nodes") or [])
+        nodes = ((data.get("project") or {}).get("workItems") or {}).get("nodes") or []
         if not nodes:
             raise GitLabBackendError(404, f"找不到 work item #{iid}")
         data = self._graphql(self._M_SET_STATUS, {"id": nodes[0]["id"], "name": status})
@@ -961,6 +977,10 @@ class PyGitlabBackend:
         with _map_errors():
             issue = self._get_project().issues.get(iid, lazy=True)
             issue.links.delete(issue_link_id)
+
+    def upload_file(self, filename: str, data: bytes) -> dict[str, Any]:
+        with _map_errors():
+            return dict(self._get_project().upload(filename, filedata=data))
 
 
 def build_gitlab_client(settings: Settings) -> GitLabClient:

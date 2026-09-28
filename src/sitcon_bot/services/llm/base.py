@@ -36,6 +36,14 @@ class TextBlock:
 
 
 @dataclass(slots=True)
+class ImageBlock:
+    """使用者訊息中的圖片（視覺輸入）；data 為原始 bytes，adapter 各自轉 base64。"""
+
+    media_type: str  # image/jpeg | image/png | image/gif | image/webp
+    data: bytes
+
+
+@dataclass(slots=True)
 class ToolUseBlock:
     id: str
     name: str
@@ -49,7 +57,7 @@ class ToolResultBlock:
     is_error: bool = False
 
 
-Block = TextBlock | ToolUseBlock | ToolResultBlock
+Block = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock
 
 
 @dataclass(slots=True)

@@ -17,6 +17,7 @@ from .agent.context import PendingStore
 from .agent.core import Agent, AgentRequest
 from .agent.prompts import PromptBuilder, PromptData
 from .agent.proofread import Proofreader
+from .agent.tools.attachment_tools import build_attachment_tools
 from .agent.tools.base import ToolRegistry
 from .agent.tools.calendar_tools import build_calendar_tools
 from .agent.tools.drive_tools import build_drive_tools
@@ -32,6 +33,7 @@ from .domain.templates import load_template_store
 from .notify.cards import collect_due_cards
 from .notify.scheduler import MilestoneNotifier
 from .notify.subscriptions import NotifyStateStore, SubscriptionStore
+from .services.attachments import AttachmentStore
 from .services.calendar_client import build_calendar_service
 from .services.drive_client import build_drive_service
 from .services.drive_content import build_drive_content_service
@@ -127,6 +129,7 @@ async def run(settings: Settings) -> None:
     else:
         log.info("網路搜尋停用（WEB_SEARCH_API_KEY 未設定）")
     hackmd = build_hackmd_client(settings)
+    attachments = AttachmentStore(settings.context_ttl_seconds)  # 與 reply-chain 同 TTL：續接時代號仍有效
     templates = await asyncio.to_thread(load_template_store)
 
     charter = {"text": await asyncio.to_thread(_load_doc, settings.team_charter_path)}
@@ -178,7 +181,8 @@ async def run(settings: Settings) -> None:
 
     tools = ToolRegistry(
         [
-            *build_gitlab_tools(gitlab, roster, settings.gitlab_url),
+            *build_gitlab_tools(gitlab, roster, settings.gitlab_url, attachments),
+            *build_attachment_tools(attachments),
             *build_people_tools(roster),
             *build_drive_tools(drive, drive_content),
             *build_photo_tools(photos),
@@ -205,6 +209,8 @@ async def run(settings: Settings) -> None:
         roster=roster,
         thinking=settings.llm_thinking,
         max_iterations=settings.llm_max_tool_iterations,
+        attachments=attachments,
+        vision=settings.llm_vision,
     )
 
     async def reload_cb() -> str:
@@ -290,6 +296,7 @@ async def run(settings: Settings) -> None:
                 history=req.history,
                 reply_context=req.reply_context,
                 on_partial=req.on_partial,
+                attachments=req.attachments,
             )
         )
         return BusinessResult(
@@ -316,7 +323,14 @@ async def run(settings: Settings) -> None:
         else None
     )
     gateway = Gateway(
-        settings, groups, audit, commands, business_handler, pending_store=pending_store, proofreader=proofreader
+        settings,
+        groups,
+        audit,
+        commands,
+        business_handler,
+        pending_store=pending_store,
+        proofreader=proofreader,
+        attachments=attachments,
     )
     gateway_ref["gw"] = gateway
 

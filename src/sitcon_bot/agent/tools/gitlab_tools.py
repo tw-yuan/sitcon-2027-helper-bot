@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ...domain.team_classifier import resolve_team_assignment
+from ...services.attachments import AttachmentError, AttachmentStore
 from ...services.gitlab_client import (
     CredentialError,
     GitLabClient,
@@ -73,11 +74,7 @@ def _label_error(exc: LabelNotFoundError) -> str:
 
 
 def _status_error(exc: StatusNotFoundError) -> str:
-    cands = (
-        "、".join(exc.candidates)
-        if exc.candidates
-        else "（無相近候選；GitLab 端可能尚未設定 native status）"
-    )
+    cands = "、".join(exc.candidates) if exc.candidates else "（無相近候選；GitLab 端可能尚未設定 native status）"
     return f"找不到狀態「{exc.requested}」，此次未執行。最接近的既有狀態：{cands}。請改用正確的狀態。"
 
 
@@ -88,9 +85,7 @@ _APPLY_HINT = (
 )
 
 
-def _fmt_issue_line(
-    iid: int, title: str, state: str, status: str | None, assignees: list[str], url: str
-) -> str:
+def _fmt_issue_line(iid: int, title: str, state: str, status: str | None, assignees: list[str], url: str) -> str:
     """一列卡片摘要。iid／status／url 為受信任的識別資訊留在圍欄外（供 LLM 據以操作）；
     標題與 assignee username 為外部可控自由文字，包進 <external_data>（NFR-6）。
     無 native status（未設定／未啟用）時退回 GitLab state。"""
@@ -131,13 +126,51 @@ def _link_fail_reason(exc: GitLabError) -> str:
     return str(exc)
 
 
+_ATTACHMENT_IDS_DESC = (
+    "要附上的使用者附件代號（訊息附件清單方括號內的 6 碼）；系統會上傳到 GitLab 並嵌入"
+    "（圖片直接顯示、其他檔案為下載連結）。不要自己在內文寫附件連結"
+)
+
+
+class _AttachmentUploadError(Exception):
+    pass
+
+
 class _GitLabToolBase(Tool):
     def __init__(
-        self, gitlab: GitLabClient, roster: RosterService | None = None, gitlab_url: str = "https://gitlab.com"
+        self,
+        gitlab: GitLabClient,
+        roster: RosterService | None = None,
+        gitlab_url: str = "https://gitlab.com",
+        attachments: AttachmentStore | None = None,
     ) -> None:
         self._gl = gitlab
         self._roster = roster
         self._gitlab_url = gitlab_url
+        self._attachments = attachments
+
+    async def _upload_attachments(self, ids: list[str], ctx: ToolContext) -> str | None:
+        """把附件上傳到 GitLab，回傳要接進描述／留言的 markdown 區塊；無附件回 None。
+
+        任一附件失敗即整批放棄（拋 _AttachmentUploadError），讓呼叫端不建卡／不留言——
+        避免「卡建了但附件少一張」這種使用者不容易發現的半成品。
+        """
+        ids = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
+        if not ids:
+            return None
+        if self._attachments is None:
+            raise _AttachmentUploadError("附件功能未啟用，無法附檔。")
+        lines: list[str] = []
+        for att_id in ids:
+            try:
+                att = self._attachments.get(ctx.chat_id, att_id)
+                data = await self._attachments.load(att)
+                lines.append(await self._gl.upload_file(att.file_name, data))
+            except AttachmentError as exc:
+                raise _AttachmentUploadError(str(exc)) from exc
+            except GitLabError as exc:
+                raise _AttachmentUploadError(f"附件 {att_id} 上傳 GitLab 失敗：{exc}") from exc
+        return "**附件**\n\n" + "\n\n".join(lines)
 
     async def _may_view_confidential(self, ctx: ToolContext) -> bool:
         """發話者可否看機密卡（2026-09-23）：以 telegram_id 精確反查名冊的職位。
@@ -162,12 +195,8 @@ class CreateIssueArgs(BaseModel):
         "前面加「[主責組、協作組…] 」前綴"
     )
     description: str | None = Field(None, description="描述（整理為簡潔 markdown）")
-    team: str | None = Field(
-        None, description="任務所屬組名（你依職掌判斷；無法判斷時留空，會自動落總召組）"
-    )
-    status: str | None = Field(
-        None, description="卡片狀態（native status，用狀態白名單裡的名稱；未指定時預設 Inbox）"
-    )
+    team: str | None = Field(None, description="任務所屬組名（你依職掌判斷；無法判斷時留空，會自動落總召組）")
+    status: str | None = Field(None, description="卡片狀態（native status，用狀態白名單裡的名稱；未指定時預設 Inbox）")
     labels: list[str] = Field(
         default_factory=list, description="其他既有 label（籌會等；不要放 Team::，狀態請用 status 欄位）"
     )
@@ -179,6 +208,14 @@ class CreateIssueArgs(BaseModel):
         None,
         description="建立後把新卡連進這張既有卡的 Linked items（批次開卡時每張帶同一張母卡 IID 供追蹤進度）",
     )
+    attachment_ids: list[str] = Field(default_factory=list, description=_ATTACHMENT_IDS_DESC)
+
+
+def _join_description(description: str | None, block: str | None) -> str | None:
+    if not block:
+        return description
+    body = (description or "").rstrip()
+    return f"{body}\n\n{block}" if body else block
 
 
 class GitlabCreateIssueTool(_GitLabToolBase):
@@ -206,9 +243,14 @@ class GitlabCreateIssueTool(_GitLabToolBase):
         assignees = args.assignee_ids or assignment.assignee_ids
 
         try:
+            files = await self._upload_attachments(args.attachment_ids, ctx)
+        except _AttachmentUploadError as exc:
+            return f"附件處理失敗，此次未建卡：{exc}"
+
+        try:
             res = await self._gl.create_issue(
                 title=args.title,
-                description=args.description,
+                description=_join_description(args.description, files),
                 label_names=labels,
                 assignee_ids=assignees,
                 due_date=args.due_date,
@@ -232,7 +274,7 @@ class GitlabCreateIssueTool(_GitLabToolBase):
             except GitLabError as exc:
                 link_line = f"⚠️ 卡已建立，但連結 #{args.link_to_iid} 失敗：{_link_fail_reason(exc)}"
         parts = [
-            f"✅ 已建立 #{issue.iid}",
+            f"✅ 已建立 #{issue.iid}" + (f"（已附 {len(args.attachment_ids)} 個附件）" if files else ""),
             # 狀態／label 受白名單約束，非自由文字
             f"狀態：{issue.status}" if issue.status else "",
             f"labels：{'、'.join(issue.labels)}" if issue.labels else "labels：（無）",
@@ -268,21 +310,35 @@ class UpdateIssueArgs(BaseModel):
     set_assignee_ids: list[int] | None = Field(None, description="整組覆蓋 assignee（空清單=清除）")
     due_date: str | None = Field(None, description="設定到期日 YYYY-MM-DD")
     clear_due_date: bool = Field(False, description="清除到期日")
+    attachment_ids: list[str] = Field(
+        default_factory=list,
+        description=_ATTACHMENT_IDS_DESC + "；會接在描述最後，不需要為了附檔而重寫 description",
+    )
 
 
 class GitlabUpdateIssueTool(_GitLabToolBase):
     name = "gitlab_update_issue"
-    description = "編輯既有卡片：標題、描述、狀態（native status）、labels（增減換）、assignees、due date。"
+    description = (
+        "編輯既有卡片：標題、描述、狀態（native status）、labels（增減換）、assignees、due date，"
+        "或把使用者附件附到卡片描述。"
+    )
     args_model = UpdateIssueArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
         assert isinstance(args, UpdateIssueArgs)
         roster = await _safe_roster(self._roster)
         try:
+            files = await self._upload_attachments(args.attachment_ids, ctx)
+        except _AttachmentUploadError as exc:
+            return f"附件處理失敗，此次未更新 #{args.iid}：{exc}"
+        # 同時改寫描述 → 附件併進新描述（在來源標註之前）；只附檔 → 接在現有描述後
+        description = _join_description(args.description, files) if args.description is not None else None
+        try:
             res = await self._gl.update_issue(
                 args.iid,
                 title=args.title,
-                description=args.description,
+                description=description,
+                append_description=files if args.description is None else None,
                 status=args.status,
                 add_labels=args.add_labels,
                 remove_labels=args.remove_labels,
@@ -328,7 +384,8 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
         if res.due_date_changed:
             changes.append(f"到期日→{res.issue.due_date or '（清除）'}")
         if res.description_changed:
-            changes.append("更新描述")
+            only_files = files and args.description is None
+            changes.append(f"描述加上 {len(args.attachment_ids)} 個附件" if only_files else "更新描述")
         tail = f"\n{_APPLY_HINT}" if missing else ""
         if missing:
             changes.append(f"⚠️ 未套用 {'；'.join(missing)}")
@@ -340,24 +397,31 @@ class GitlabUpdateIssueTool(_GitLabToolBase):
 # --------------------------------------------------------------------------- #
 class CommentIssueArgs(BaseModel):
     iid: int
-    body: str = Field(description="留言內容")
+    body: str = Field("", description="留言內容（只附檔時可留空）")
+    attachment_ids: list[str] = Field(default_factory=list, description=_ATTACHMENT_IDS_DESC)
 
 
 class GitlabCommentIssueTool(_GitLabToolBase):
     name = "gitlab_comment_issue"
-    description = "在指定卡片新增一則留言。"
+    description = "在指定卡片新增一則留言（可附上使用者傳的圖片／檔案）。"
     args_model = CommentIssueArgs
 
     async def run(self, args: BaseModel, ctx: ToolContext) -> str:
         assert isinstance(args, CommentIssueArgs)
         roster = await _safe_roster(self._roster)
         try:
-            await self._gl.comment_issue(
-                args.iid, args.body, requester=_requester_handle(roster, ctx, self._gitlab_url)
-            )
+            files = await self._upload_attachments(args.attachment_ids, ctx)
+        except _AttachmentUploadError as exc:
+            return f"附件處理失敗，此次未留言：{exc}"
+        body = _join_description(args.body, files) or ""
+        if not body.strip():
+            return "留言內容是空的：請提供留言文字或附件代號。"
+        try:
+            await self._gl.comment_issue(args.iid, body, requester=_requester_handle(roster, ctx, self._gitlab_url))
         except GitLabError as exc:
             return f"留言失敗：{exc}"
-        return f"✅ 已在 #{args.iid} 留言。"
+        suffix = f"（含 {len(args.attachment_ids)} 個附件）" if files else ""
+        return f"✅ 已在 #{args.iid} 留言{suffix}。"
 
 
 # --------------------------------------------------------------------------- #
@@ -507,9 +571,7 @@ class SearchIssuesArgs(BaseModel):
     label_filters: list[str] = Field(default_factory=list, description="要過濾的既有 label（Team::、籌會）")
     status: str | None = Field(None, description="以狀態過濾（native status，用狀態白名單裡的名稱）")
     assignee_id: int | None = Field(None, description="指定 assignee 的 gitlab_id")
-    title_query: str | None = Field(
-        None, description="標題/描述關鍵字（子字串即可命中；多個詞以空白分隔時須全部命中）"
-    )
+    title_query: str | None = Field(None, description="標題/描述關鍵字（子字串即可命中；多個詞以空白分隔時須全部命中）")
     open_only: bool = Field(False, description="只列開著的卡（opened 且狀態非 Review）")
 
 
@@ -540,9 +602,8 @@ class GitlabSearchIssuesTool(_GitLabToolBase):
             hidden = len(issues) - len(visible)
             issues = visible
             if hidden and not issues:
-                return (
-                    f"查到的 {hidden} 張都是機密卡，未對此使用者顯示。"
-                    + _CONFIDENTIAL_DENIED.format(roles=_CONFIDENTIAL_ROLES)
+                return f"查到的 {hidden} 張都是機密卡，未對此使用者顯示。" + _CONFIDENTIAL_DENIED.format(
+                    roles=_CONFIDENTIAL_ROLES
                 )
             if hidden:
                 note = f"（另有 {hidden} 張機密卡未顯示——只有{_CONFIDENTIAL_ROLES}看得到）\n"
@@ -633,12 +694,15 @@ class GitlabUnlinkIssuesTool(_GitLabToolBase):
 
 
 def build_gitlab_tools(
-    gitlab: GitLabClient, roster: RosterService | None, gitlab_url: str = "https://gitlab.com"
+    gitlab: GitLabClient,
+    roster: RosterService | None,
+    gitlab_url: str = "https://gitlab.com",
+    attachments: AttachmentStore | None = None,
 ) -> list[Tool]:
     return [
-        GitlabCreateIssueTool(gitlab, roster, gitlab_url),
-        GitlabUpdateIssueTool(gitlab, roster, gitlab_url),
-        GitlabCommentIssueTool(gitlab, roster, gitlab_url),
+        GitlabCreateIssueTool(gitlab, roster, gitlab_url, attachments),
+        GitlabUpdateIssueTool(gitlab, roster, gitlab_url, attachments),
+        GitlabCommentIssueTool(gitlab, roster, gitlab_url, attachments),
         GitlabGetIssueTool(gitlab, roster, gitlab_url),
         GitlabSearchIssuesTool(gitlab, roster, gitlab_url),
         GitlabLinkIssuesTool(gitlab, roster, gitlab_url),

@@ -10,6 +10,7 @@ service_tier：留空則不帶（由 provider 決定）。Codex 的「fast mode�
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -17,6 +18,7 @@ from typing import Any
 
 from .base import (
     DEFAULT_MAX_TOKENS,
+    ImageBlock,
     LLMClient,
     LLMResponse,
     Message,
@@ -121,7 +123,12 @@ class OpenAICompatAdapter(LLMClient):
         )
         log.info(
             "LLM openai_compat model=%s in=%d out=%d latency=%.2fs finish=%s tools=%d",
-            self._model, usage.input_tokens, usage.output_tokens, latency, finish_reason, len(tool_calls),
+            self._model,
+            usage.input_tokens,
+            usage.output_tokens,
+            latency,
+            finish_reason,
+            len(tool_calls),
         )
 
         raw_assistant: dict[str, Any] = {"role": "assistant", "content": content}
@@ -174,8 +181,7 @@ class OpenAICompatAdapter(LLMClient):
                 if tc.function and tc.function.arguments:
                     slot["arguments"].append(tc.function.arguments)
         tool_calls = [
-            (slot["id"], slot["name"], "".join(slot["arguments"]) or "{}")
-            for _, slot in sorted(pending.items())
+            (slot["id"], slot["name"], "".join(slot["arguments"]) or "{}") for _, slot in sorted(pending.items())
         ]
         return "".join(acc) or None, finish_reason, raw_usage, tool_calls
 
@@ -187,10 +193,18 @@ class OpenAICompatAdapter(LLMClient):
 
         out: list[dict[str, Any]] = []
         text_parts: list[str] = []
+        # 有圖片時 user content 改為多段（text／image_url 依原順序）；無圖維持純字串以相容舊 gateway
+        parts: list[dict[str, Any]] = []
+        has_image = False
         tool_use_blocks: list[ToolUseBlock] = []
         for b in m.content:
             if isinstance(b, TextBlock):
                 text_parts.append(b.text)
+                parts.append({"type": "text", "text": b.text})
+            elif isinstance(b, ImageBlock):
+                has_image = True
+                url = f"data:{b.media_type};base64,{base64.b64encode(b.data).decode('ascii')}"
+                parts.append({"type": "image_url", "image_url": {"url": url}})
             elif isinstance(b, ToolResultBlock):
                 # 工具結果為獨立的 role=tool 訊息
                 out.append({"role": "tool", "tool_call_id": b.tool_call_id, "content": b.content})
@@ -209,6 +223,9 @@ class OpenAICompatAdapter(LLMClient):
                     for t in tool_use_blocks
                 ]
             out.insert(0, am)
+        elif has_image:
+            # 接在 role=tool 訊息之後：tool 結果必須緊跟帶 tool_calls 的 assistant 回合
+            out.append({"role": "user", "content": parts})
         elif text_parts:
-            out.insert(0, {"role": "user", "content": "".join(text_parts)})
+            out.append({"role": "user", "content": "".join(text_parts)})
         return out

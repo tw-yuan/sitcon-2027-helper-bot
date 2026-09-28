@@ -7,12 +7,14 @@ thinking 對映：off → thinking disabled；low/medium/high → adaptive think
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from typing import Any
 
 from .base import (
     DEFAULT_MAX_TOKENS,
+    ImageBlock,
     LLMClient,
     LLMResponse,
     Message,
@@ -74,16 +76,13 @@ class AnthropicAdapter(LLMClient):
         }
         if tools:
             params["tools"] = [
-                {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-                for t in tools
+                {"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools
             ]
         if self._web_search:
             # Server-side 工具：Anthropic 端執行，結果以 server_tool_use／web_search_tool_result
             # 區塊出現在回應中（raw 回填即保留於歷史）。用基本版 20250305——實測本 gateway
             # 對新版 20260209（動態過濾）轉譯不穩。搜尋中途可能回 stop_reason=pause_turn。
-            params.setdefault("tools", []).append(
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
-            )
+            params.setdefault("tools", []).append({"type": "web_search_20250305", "name": "web_search", "max_uses": 5})
         if thinking == "off":
             params["thinking"] = {"type": "disabled"}
         else:
@@ -119,7 +118,12 @@ class AnthropicAdapter(LLMClient):
         )
         log.info(
             "LLM anthropic model=%s in=%d out=%d latency=%.2fs stop=%s tools=%d",
-            self._model, usage.input_tokens, usage.output_tokens, latency, resp.stop_reason, len(tool_calls),
+            self._model,
+            usage.input_tokens,
+            usage.output_tokens,
+            latency,
+            resp.stop_reason,
+            len(tool_calls),
         )
         return LLMResponse(
             text="".join(text_parts) or None,
@@ -138,6 +142,17 @@ class AnthropicAdapter(LLMClient):
         for b in m.content:
             if isinstance(b, TextBlock):
                 content.append({"type": "text", "text": b.text})
+            elif isinstance(b, ImageBlock):
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": b.media_type,
+                            "data": base64.b64encode(b.data).decode("ascii"),
+                        },
+                    }
+                )
             elif isinstance(b, ToolUseBlock):
                 content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
             elif isinstance(b, ToolResultBlock):
