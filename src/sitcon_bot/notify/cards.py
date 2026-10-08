@@ -1,6 +1,6 @@
-"""到期卡片提醒（NT-11，2026-08-06 二次修訂）——收集「開著」（GL-22：opened 且 native status ≠ Review）
-且到期日臨近的 GitLab 卡片：以預告目標日 target（＝隔天）為準，列出 due ∈ [target−2, target]
-（隔天到期、當天到期、過期一天內）；過期超過一天、未填到期日者皆不提醒。
+"""到期卡片提醒（NT-11，2026-10-08 三次修訂）——收集「開著」（GL-22：opened 且 native status ≠ Review）
+且到期日不晚於預告目標日 target（＝隔天）的 GitLab 卡片：due ≤ target，即隔天到期、當天到期，
+以及所有已過期但還沒進 Review／關閉的卡（不再限「過期一天內」）；未填到期日者不提醒。
 並把 assignee 換成 Telegram tag、從 Team:: label 取出組名供 digest 分組。
 
 【2026-09-23 修訂】機密卡（GitLab confidential）一律排除：每日預告是廣播給所有訂閱群、
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 from ..services.gitlab_client import Assignee, GitLabClient
 from ..services.sheets_roster import Member, RosterService
@@ -56,15 +56,15 @@ def mention_html(a: Assignee, member: Member | None) -> str:
 
 
 async def collect_due_cards(gitlab: GitLabClient, roster: RosterService | None, target: date) -> list[CardReminder]:
-    """開著（GL-22）且 due ∈ [target−2, target] 的卡片（target＝預告目標日，即隔天）：
-    隔天到期、當天到期、過期一天內；過期超過一天與未填到期日不列。過期最久在前。
+    """開著（GL-22）且 due ≤ target 的卡片（target＝預告目標日，即隔天）：
+    隔天到期、當天到期與所有已過期者；未填到期日不列。過期最久在前。
     機密卡（confidential）不列——預告是廣播，見模組 docstring。"""
     dated = [
         (i, due)
         for i in await gitlab.open_cards()
         if not i.confidential  # 機密卡不進廣播（2026-09-23）
         and i.due_date
-        and target - timedelta(days=2) <= (due := date.fromisoformat(i.due_date)) <= target
+        and (due := date.fromisoformat(i.due_date)) <= target
     ]
     if not dated:
         return []

@@ -8,7 +8,7 @@ from sitcon_bot.notify.cards import collect_due_cards, mention_html
 from sitcon_bot.services.gitlab_client import Assignee, Issue
 from sitcon_bot.services.sheets_roster import Member, Roster
 
-# 預告目標日（隔天）；提醒視窗為 [TARGET−2, TARGET]（隔天／當天到期、過期一天內）。
+# 預告目標日（隔天）；提醒範圍為 due ≤ TARGET（隔天／當天到期與所有已過期者）。
 TARGET = date(2026, 7, 26)
 
 
@@ -117,19 +117,20 @@ async def test_collect_maps_assignees_and_parses_due() -> None:
     assert card.mentions == ("@alice", '<a href="tg://user?id=55">鮑伯</a>')
 
 
-async def test_collect_keeps_only_due_window() -> None:
-    """2026-08-06 二次修訂：只留隔天到期、當天到期、過期一天內；再早再晚都不提醒。"""
+async def test_collect_keeps_due_by_target_including_long_overdue() -> None:
+    """2026-10-08 三次修訂：隔天以前（含）到期都列，過期再久也列；後天以後才到期不列。"""
     gitlab = _FakeGitLab(
         [
-            _issue(1, "2026-07-23"),  # 過期兩天 → 不列
-            _issue(2, "2026-07-24"),  # 過期一天 → 列
-            _issue(3, "2026-07-25"),  # 當天到期 → 列
-            _issue(4, "2026-07-26"),  # 隔天到期 → 列
-            _issue(5, "2026-07-27"),  # 後天才到期 → 不列
+            _issue(1, "2026-06-01"),  # 過期快兩個月 → 列
+            _issue(2, "2026-07-23"),  # 過期兩天 → 列（舊規則不列）
+            _issue(3, "2026-07-24"),  # 過期一天 → 列
+            _issue(4, "2026-07-25"),  # 當天到期 → 列
+            _issue(5, "2026-07-26"),  # 隔天到期 → 列
+            _issue(6, "2026-07-27"),  # 後天才到期 → 不列
         ]
     )
     cards = await collect_due_cards(gitlab, None, TARGET)
-    assert [c.iid for c in cards] == [2, 3, 4]
+    assert [c.iid for c in cards] == [1, 2, 3, 4, 5]
 
 
 async def test_collect_excludes_confidential_cards() -> None:
@@ -181,6 +182,6 @@ async def test_collect_empty_issue_list_skips_roster() -> None:
 
 
 async def test_collect_all_out_of_window_skips_roster() -> None:
-    """全數落在視窗外時視同無卡，不去打名冊。"""
-    gitlab = _FakeGitLab([_issue(1, "2026-07-01"), _issue(2, None)])
+    """全數還沒到期（或未填到期日）時視同無卡，不去打名冊。"""
+    gitlab = _FakeGitLab([_issue(1, "2026-08-01"), _issue(2, None)])
     assert await collect_due_cards(gitlab, _FakeRoster(fail=True), TARGET) == []

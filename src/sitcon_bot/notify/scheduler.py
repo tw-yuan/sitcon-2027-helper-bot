@@ -1,8 +1,8 @@
 """每日里程碑預告排程（NT-6～NT-8、NT-11）。
 
 固定於 Asia/Taipei 每天 `MILESTONE_NOTIFY_HOUR:MINUTE`（預設 23:00）送出**隔天**的里程碑，
-並附上到期在即的 GitLab 卡片提醒（NT-11，2026-08-06 二次修訂：只列隔天到期、當天到期、
-過期一天內的開著卡；過期超過一天與未填到期日不列。卡片不分組別，所有訂閱群都收到）。
+並附上到期的 GitLab 卡片提醒（NT-11，2026-10-08 三次修訂：列隔天到期、當天到期與所有已過期的
+開著卡；未填到期日不列。卡片不分組別，所有訂閱群都收到）。
 
 設計取捨：
   - 不引入 APScheduler／外部排程（AGENTS 9.9 只允許單機）。以 60 秒 tick 輪詢判斷是否到點，
@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 # 送出一則預告 (chat_id, thread_id, html)：回傳是否成功（失敗不應中斷其餘群組）。
 Sender = Callable[[int, int | None, str], Awaitable[bool]]
 
-# 取得到期在即的卡片清單（GL-22 開著且 due ∈ [target−2, target]，target＝預告目標日）；
+# 取得到期的卡片清單（GL-22 開著且 due ≤ target，target＝預告目標日）；
 # 失敗往外拋，由排程端決定降級。
 CardsProvider = Callable[[date], Awaitable[list[CardReminder]]]
 
@@ -131,7 +131,7 @@ class MilestoneNotifier:
     # 派送與預覽
     # ------------------------------------------------------------------ #
     async def _due_cards(self, target: date) -> list[CardReminder]:
-        """target 視窗內到期的卡片；取不到時降級為只送里程碑段。"""
+        """target 以前（含）到期的卡片；取不到時降級為只送里程碑段。"""
         if self._cards is None:
             return []
         try:
