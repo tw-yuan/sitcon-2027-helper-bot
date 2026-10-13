@@ -14,7 +14,7 @@
   取值前必須先判型別。
 - 長搜尋可能回 `stop_reason="pause_turn"`，要把該則 assistant 訊息**原樣**送回續跑。
 - 工具版本釘在基本版：新版（動態過濾）經 sub2api gateway 會被轉成 code_execution 且拿不到
-  結果（2026-08-24 實測）。換官方端點才可以考慮升版。
+  結果（2026-08-24 實測）。2026-10-13 起改走官方端點，基本版照常可用，升版前需重驗結果解析。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# 基本版工具：經 sub2api gateway 只有這組轉譯得動，勿改版本號（見模組 docstring）。
+# 基本版工具：升版前需重驗結果解析（見模組 docstring）。
 SEARCH_TOOL_TYPE = "web_search_20250305"
 FETCH_TOOL_TYPE = "web_fetch_20250910"
 

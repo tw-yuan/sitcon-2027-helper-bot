@@ -1,6 +1,6 @@
 """Anthropic Messages API adapter。
 
-thinking 對映：off → thinking disabled；low/medium/high → adaptive thinking + effort。
+thinking 對映：off → thinking disabled（Sonnet 5.5 改送 between_tools）；low/medium/high → adaptive thinking + effort。
 （不使用 budget_tokens——該機制已於 Opus 4.7+/Sonnet 5/Fable 5 移除並回 400。）
 帶 tool_use 的 assistant 回合以 raw 內容原樣回填，保住 thinking 區塊。
 """
@@ -29,6 +29,40 @@ from .base import (
 )
 
 log = logging.getLogger(__name__)
+
+# 這些模型的 thinking {"type": "disabled"} 會回 400，關閉思考要改送 between_tools（不可帶其他欄位）。
+_BETWEEN_TOOLS_MODELS = ("claude-sonnet-5-5",)
+
+
+def _thinking_off(model: str) -> dict[str, Any]:
+    if model.startswith(_BETWEEN_TOOLS_MODELS):
+        return {"type": "between_tools"}
+    return {"type": "disabled"}
+
+
+def _is_thinking_binding_error(exc: Exception) -> bool:
+    """回填的 thinking 區塊因對話前綴改變而被拒（400，訊息含 bound to a different conversation）。"""
+    return getattr(exc, "status_code", None) == 400 and "different conversation" in str(exc)
+
+
+def _strip_thinking(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """拿掉 assistant 歷史中的 thinking／redacted_thinking 區塊；只剩 thinking 的訊息整則略過。"""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        content = m.get("content")
+        if m.get("role") != "assistant" or not isinstance(content, list):
+            out.append(m)
+            continue
+        kept = [b for b in content if _block_type(b) not in ("thinking", "redacted_thinking")]
+        if kept:
+            out.append({**m, "content": kept})
+    return out
+
+
+def _block_type(block: Any) -> str | None:
+    if isinstance(block, dict):
+        return block.get("type")
+    return getattr(block, "type", None)
 
 
 class AnthropicAdapter(LLMClient):
@@ -84,23 +118,23 @@ class AnthropicAdapter(LLMClient):
             # 對新版 20260209（動態過濾）轉譯不穩。搜尋中途可能回 stop_reason=pause_turn。
             params.setdefault("tools", []).append({"type": "web_search_20250305", "name": "web_search", "max_uses": 5})
         if thinking == "off":
-            params["thinking"] = {"type": "disabled"}
+            params["thinking"] = _thinking_off(self._model)
         else:
             params["thinking"] = {"type": "adaptive"}
             params["output_config"] = {"effort": thinking}
 
         started = time.monotonic()
-        if on_text is None:
-            resp = await self._client.messages.create(**params)
-        else:
-            # 串流模式：text delta 以「累積全文」回呼（gateway 節流送 Telegram 草稿），
-            # 最終仍取完整 message，後續解析與非串流路徑完全相同。
-            async with self._client.messages.stream(**params) as stream:
-                acc: list[str] = []
-                async for delta in stream.text_stream:
-                    acc.append(delta)
-                    await on_text("".join(acc))
-                resp = await stream.get_final_message()
+        try:
+            resp = await self._send(params, on_text)
+        except Exception as exc:
+            if not _is_thinking_binding_error(exc):
+                raise
+            # Sonnet 5.5／Opus 5.5 起 thinking 區塊綁定產生它的對話前綴（system／tools／先前訊息）。
+            # reply-chain 續接時 system prompt 會重組（名冊、label、群組記憶變動就不同），回填的
+            # thinking 因此被拒。依官方建議拿掉歷史中的 thinking 區塊重送一次（text／tool_use 保留）。
+            log.warning("thinking 區塊與對話前綴不符，拿掉歷史 thinking 重送：%s", exc)
+            params["messages"] = _strip_thinking(params["messages"])
+            resp = await self._send(params, on_text)
         latency = time.monotonic() - started
 
         text_parts: list[str] = []
@@ -133,6 +167,18 @@ class AnthropicAdapter(LLMClient):
             model=self._model,
             raw_assistant=resp.content,  # 原樣回填（含 thinking 區塊）
         )
+
+    async def _send(self, params: dict[str, Any], on_text: TextStreamHandler | None) -> Any:
+        if on_text is None:
+            return await self._client.messages.create(**params)
+        # 串流模式：text delta 以「累積全文」回呼（gateway 節流送 Telegram 草稿），
+        # 最終仍取完整 message，後續解析與非串流路徑完全相同。
+        async with self._client.messages.stream(**params) as stream:
+            acc: list[str] = []
+            async for delta in stream.text_stream:
+                acc.append(delta)
+                await on_text("".join(acc))
+            return await stream.get_final_message()
 
     @staticmethod
     def _to_message(m: Message) -> dict[str, Any]:

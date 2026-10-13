@@ -55,9 +55,9 @@ class Settings(BaseSettings):
     # 搜尋／抓取工具完成（services/web_search.py）。留空 API key＝不註冊工具。
     # 這樣設計是因為 server-side 工具只有 anthropic provider 吃得到，換後端會整個失效。
     web_search_api_key: SecretStr = SecretStr("")
-    web_search_model: str = "claude-opus-4-8"
-    web_search_base_url: str = "https://llm.rlong.me"
-    web_search_auth_bearer: bool = True  # 該 gateway 只認 Authorization: Bearer
+    web_search_model: str = "claude-sonnet-5-5"
+    web_search_base_url: str = ""  # 留空＝Anthropic 官方端點
+    web_search_auth_bearer: bool = False  # true＝以 Authorization: Bearer 送（只認 Bearer 的 gateway）
     web_search_max_uses: int = 0  # 0＝不限搜尋次數，由模型自行判斷（客戶指定）
     web_search_max_content_tokens: int = 40000  # web_fetch 單頁內容上限，防大頁面吃光 token
     web_search_country: str = "TW"  # 搜尋結果在地化（ISO 3166-1 alpha-2）

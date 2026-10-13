@@ -106,6 +106,71 @@ async def test_anthropic_thinking_off_disables() -> None:
     assert "tools" not in client.last_params  # 無工具時不帶
 
 
+async def test_anthropic_thinking_off_sonnet_5_5_uses_between_tools() -> None:
+    # Sonnet 5.5 對 disabled 回 400；between_tools 不可帶其他欄位，也不帶 effort
+    client = FakeAnthropicClient(_anthropic_resp())
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=client)
+    await adapter.chat(system="s", messages=[Message("user", [TextBlock("hi")])], tools=[], thinking="off")
+    assert client.last_params["thinking"] == {"type": "between_tools"}
+    assert "output_config" not in client.last_params
+
+
+class _BindingError(Exception):
+    status_code = 400
+
+
+async def test_anthropic_strips_history_thinking_on_binding_mismatch() -> None:
+    # 續接時 system prompt 已重組 → 回填的 thinking 被拒 → 拿掉 thinking 重送一次
+    calls: list[dict[str, Any]] = []
+    resp = _anthropic_resp()
+
+    async def create(**params: Any) -> Any:
+        calls.append(params)
+        if len(calls) == 1:
+            raise _BindingError(
+                "Invalid `signature` in `thinking` block. The block is bound to a different conversation."
+            )
+        return resp
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=client)
+    thinking = SimpleNamespace(type="thinking", thinking="", signature="sig")
+    only_thinking = Message("assistant", [], raw=[SimpleNamespace(type="redacted_thinking", data="x")])
+    history = [
+        Message("user", [TextBlock("開卡")]),
+        Message("assistant", [], raw=[thinking, *resp.content]),
+        Message("user", [ToolResultBlock("tu1", "#42 已建立")]),
+        only_thinking,
+        Message("user", [TextBlock("再開一張")]),
+    ]
+    r = await adapter.chat(system="s2", messages=history, tools=TOOLS, thinking="high")
+
+    assert r.tool_calls[0].name == "gitlab_create_issue"
+    assert len(calls) == 2
+    retried = calls[1]["messages"]
+    assert retried[1] == {"role": "assistant", "content": resp.content}  # thinking 拿掉、其餘原樣
+    assert [m["role"] for m in retried] == ["user", "assistant", "user", "user"]  # 只剩 thinking 的整則略過
+
+
+async def test_anthropic_other_bad_request_not_retried() -> None:
+    calls = 0
+
+    async def create(**params: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise _BindingError("messages.0: invalid image")
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=client)
+    try:
+        await adapter.chat(system="s", messages=[Message("user", [TextBlock("hi")])], tools=[], thinking="high")
+    except _BindingError:
+        pass
+    else:
+        raise AssertionError("應原樣拋出")
+    assert calls == 1
+
+
 async def test_anthropic_tool_loop_roundtrip_preserves_raw() -> None:
     resp = _anthropic_resp()
     client = FakeAnthropicClient(resp)
