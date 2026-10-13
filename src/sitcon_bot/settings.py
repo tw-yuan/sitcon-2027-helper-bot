@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # anthropic 專用：掛 Anthropic server-side web search 工具（web_search_20250305，
     # 伺服器端執行，無需自建搜尋 API）。實測 sub2api gateway 可轉譯；openai_compat 下忽略。
     llm_web_search: bool = False
+    # anthropic 專用：安全分類器拒答時由伺服器端改用其他模型重跑（fallbacks="default"，官方 API 限定；
+    # Sonnet 5.5 的 cyber／frontier_llm 拒答改由 Sonnet 5 回答）。gateway 不認得該 beta 時設 false。
+    llm_refusal_fallback: bool = True
     # openai_compat 專用；留空＝不帶。Codex 的 fast mode 即 service_tier="fast"，
     # 官方 API 另有 priority／flex。不支援時 provider 會回 400，改回留空即可。
     llm_service_tier: str = ""
@@ -62,6 +65,7 @@ class Settings(BaseSettings):
     web_search_max_content_tokens: int = 40000  # web_fetch 單頁內容上限，防大頁面吃光 token
     web_search_country: str = "TW"  # 搜尋結果在地化（ISO 3166-1 alpha-2）
     web_search_timeout: float = 180.0  # 子呼叫逾時（秒）；搜尋回合多時會偏慢
+    web_search_refusal_fallback: bool = True  # 同 llm_refusal_fallback，套用在搜尋子呼叫
 
     # --- GitLab ---
     gitlab_url: str = "https://gitlab.com"

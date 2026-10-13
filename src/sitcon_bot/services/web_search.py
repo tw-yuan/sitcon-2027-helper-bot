@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .llm.anthropic_adapter import FALLBACK_BETA, after_fallback
+
 log = logging.getLogger(__name__)
 
 # 基本版工具：升版前需重驗結果解析（見模組 docstring）。
@@ -132,8 +134,10 @@ class WebSearchService:
         country: str = "TW",
         timezone: str = "Asia/Taipei",
         timeout: float = 180.0,
+        refusal_fallback: bool = False,
     ) -> None:
         self._model = model
+        self._refusal_fallback = refusal_fallback
         self._max_uses = max_uses
         self._max_content_tokens = max_content_tokens
         self._country = country
@@ -187,6 +191,11 @@ class WebSearchService:
         tool_errors: list[str] = []
         truncated = False
 
+        # 安全分類器拒答（如資安類查詢）時由伺服器端改用其他模型重跑，見 anthropic_adapter。
+        extra: dict[str, Any] = {}
+        if self._refusal_fallback:
+            extra = {"extra_headers": {"anthropic-beta": FALLBACK_BETA}, "extra_body": {"fallbacks": "default"}}
+
         started = time.monotonic()
         for attempt in range(MAX_PAUSE_RESUMES + 1):
             try:
@@ -196,6 +205,7 @@ class WebSearchService:
                     system=SUB_SYSTEM,
                     messages=messages,
                     tools=self._tools(),
+                    **extra,
                 )
             except Exception as exc:  # SDK 例外一律轉成工具層看得懂的錯誤
                 raise WebSearchError(f"{type(exc).__name__}: {exc}") from exc
@@ -222,10 +232,12 @@ class WebSearchService:
             stop = getattr(resp, "stop_reason", "") or ""
             if stop == "max_tokens":
                 truncated = True
+            if stop == "refusal":
+                tool_errors.append("refusal")
             if stop != "pause_turn":
                 break
-            # pause_turn：把該則 assistant 訊息原樣送回續跑（內容不可修改）。
-            messages.append({"role": "assistant", "content": resp.content})
+            # pause_turn：把該則 assistant 訊息原樣送回續跑（內容不可修改；只拿掉 fallback 標記與被中斷的部分）。
+            messages.append({"role": "assistant", "content": after_fallback(resp.content)})
             if attempt == MAX_PAUSE_RESUMES:
                 truncated = True
 
@@ -278,4 +290,5 @@ def build_web_search_service(settings: Any) -> WebSearchService | None:
         country=settings.web_search_country,
         timezone=settings.tz,
         timeout=settings.web_search_timeout,
+        refusal_fallback=bool(getattr(settings, "web_search_refusal_fallback", False)),
     )

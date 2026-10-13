@@ -233,3 +233,14 @@ def test_build_service_returns_none_without_key(required_env: dict[str, str], mo
     monkeypatch.setenv("WEB_SEARCH_API_KEY", "")
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert build_web_search_service(settings) is None
+
+
+async def test_refusal_fallback_params_and_refusal_reported() -> None:
+    refused = SimpleNamespace(content=[], stop_reason="refusal")
+    client = FakeAnthropicClient(refused)
+    outcome = await _service(client, refusal_fallback=True).search("某個 CVE 的細節")
+
+    assert client.calls[0]["extra_headers"] == {"anthropic-beta": "server-side-fallback-2026-07-01"}
+    assert client.calls[0]["extra_body"] == {"fallbacks": "default"}
+    assert outcome.tool_errors == ["refusal"]
+    assert outcome.text == ""

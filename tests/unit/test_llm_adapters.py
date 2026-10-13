@@ -403,3 +403,77 @@ async def test_openai_streaming_accumulates_text_and_tool_calls() -> None:
     assert r.tool_calls[0].arguments == {"title": "官網"}  # arguments 片段跨 chunk 累積
     assert r.usage.input_tokens == 9
     assert r.raw_assistant["tool_calls"][0]["function"]["name"] == "gitlab_create_issue"
+
+
+# ------------------------------------------------------------------ #
+# 安全分類器拒答與伺服器端 fallback
+# ------------------------------------------------------------------ #
+async def test_anthropic_refusal_fallback_params_sent() -> None:
+    client = FakeAnthropicClient(_anthropic_resp())
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=client, refusal_fallback=True)
+    await adapter.chat(system="s", messages=[Message("user", [TextBlock("hi")])], tools=[], thinking="medium")
+    assert client.last_params["extra_headers"] == {"anthropic-beta": "server-side-fallback-2026-07-01"}
+    assert client.last_params["extra_body"] == {"fallbacks": "default"}
+
+
+async def test_anthropic_refusal_fallback_off_by_default() -> None:
+    client = FakeAnthropicClient(_anthropic_resp())
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=client)
+    await adapter.chat(system="s", messages=[Message("user", [TextBlock("hi")])], tools=[], thinking="medium")
+    assert "extra_headers" not in client.last_params
+    assert "extra_body" not in client.last_params
+
+
+async def test_anthropic_mid_output_fallback_drops_interrupted_blocks() -> None:
+    # 中途拒答 → Sonnet 5 接手：邊界前只留 text（續寫起點），thinking／tool_use 不回填也不執行
+    text_before = SimpleNamespace(type="text", text="我先查")
+    resp = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="thinking", thinking="", signature="s1"),
+            text_before,
+            SimpleNamespace(type="tool_use", id="old", name="gitlab_create_issue", input={}),
+            SimpleNamespace(type="fallback", text=None),
+            SimpleNamespace(type="text", text="一下卡片"),
+            SimpleNamespace(type="tool_use", id="new", name="gitlab_create_issue", input={"title": "x"}),
+        ],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        stop_reason="tool_use",
+        model="claude-sonnet-5",
+    )
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=FakeAnthropicClient(resp))
+    r = await adapter.chat(system="s", messages=[Message("user", [TextBlock("開卡")])], tools=TOOLS, thinking="medium")
+
+    assert r.text == "我先查一下卡片"
+    assert [tc.id for tc in r.tool_calls] == ["new"]
+    assert [b.type for b in r.raw_assistant] == ["text", "text", "tool_use"]
+    assert r.raw_assistant[0] is text_before
+    assert r.model == "claude-sonnet-5"  # 記錄實際接手的模型
+
+
+async def test_anthropic_refusal_returns_notice_without_raw() -> None:
+    resp = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="半截輸出")],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        stop_reason="refusal",
+        stop_details=SimpleNamespace(category="bio"),
+    )
+    adapter = AnthropicAdapter(api_key="x", model="claude-sonnet-5-5", client=FakeAnthropicClient(resp))
+    r = await adapter.chat(system="s", messages=[Message("user", [TextBlock("hi")])], tools=TOOLS, thinking="medium")
+
+    assert r.stop_reason == "refusal"
+    assert r.tool_calls == []
+    assert "半截" not in (r.text or "") and "安全機制" in (r.text or "")
+    m = r.assistant_message()
+    assert m.raw is None and m.content[0].text == r.text  # 歷史只留說明，不回填被中斷的內容
+
+
+def test_factory_passes_refusal_fallback() -> None:
+    settings = SimpleNamespace(
+        llm_provider="anthropic",
+        llm_api_key=FakeSecret("k"),
+        llm_model="claude-sonnet-5-5",
+        llm_base_url="",
+        llm_refusal_fallback=True,
+    )
+    adapter = build_llm_client(settings)
+    assert adapter._refusal_fallback is True

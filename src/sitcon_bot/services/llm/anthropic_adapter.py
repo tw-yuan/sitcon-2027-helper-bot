@@ -30,6 +30,11 @@ from .base import (
 
 log = logging.getLogger(__name__)
 
+# 安全分類器拒答時由伺服器端改用其他模型重跑；"default" 依拒答類別選模型
+# （Sonnet 5.5：cyber／frontier_llm → Sonnet 5；bio 等類別不重跑）。
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+REFUSAL_NOTICE = "（這個請求被模型的安全機制擋下了，請換個說法再試一次。）"
+
 # 這些模型的 thinking {"type": "disabled"} 會回 400，關閉思考要改送 between_tools（不可帶其他欄位）。
 _BETWEEN_TOOLS_MODELS = ("claude-sonnet-5-5",)
 
@@ -59,6 +64,30 @@ def _strip_thinking(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def after_fallback(content: Any) -> Any:
+    """伺服器端 fallback 後可回填的內容；沒有 fallback 就原物件奉還。
+
+    最後一個 fallback 區塊之前只留 text 與成對的 server tool 區塊。
+
+    中途拒答再由其他模型接手時，邊界前的 thinking／tool_use 是被中斷那次的產物——回填會被拒，
+    tool_use 也不能執行；text 則是接手模型的續寫起點，要保留。fallback 區塊本身只是稽核標記，
+    一律拿掉（非 beta 的 SDK 型別會把它解析成 text=None 的 TextBlock，原樣回填不安全）。
+    """
+    idx = max((i for i, b in enumerate(content) if _block_type(b) == "fallback"), default=-1)
+    if idx < 0:
+        return content
+    head = content[:idx]
+    result_ids = {getattr(b, "tool_use_id", None) for b in head if (_block_type(b) or "").endswith("_tool_result")}
+    kept = [
+        b
+        for b in head
+        if _block_type(b) == "text"
+        or (_block_type(b) or "").endswith("_tool_result")
+        or (_block_type(b) == "server_tool_use" and getattr(b, "id", None) in result_ids)
+    ]
+    return kept + [b for b in content[idx + 1 :] if _block_type(b) != "fallback"]
+
+
 def _block_type(block: Any) -> str | None:
     if isinstance(block, dict):
         return block.get("type")
@@ -75,10 +104,12 @@ class AnthropicAdapter(LLMClient):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         auth_bearer: bool = False,
         web_search: bool = False,
+        refusal_fallback: bool = False,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
         self._web_search = web_search
+        self._refusal_fallback = refusal_fallback
         if client is not None:
             self._client = client
         else:
@@ -122,6 +153,9 @@ class AnthropicAdapter(LLMClient):
         else:
             params["thinking"] = {"type": "adaptive"}
             params["output_config"] = {"effort": thinking}
+        if self._refusal_fallback:
+            params["extra_headers"] = {"anthropic-beta": FALLBACK_BETA}
+            params["extra_body"] = {"fallbacks": "default"}
 
         started = time.monotonic()
         try:
@@ -137,12 +171,13 @@ class AnthropicAdapter(LLMClient):
             resp = await self._send(params, on_text)
         latency = time.monotonic() - started
 
+        content = after_fallback(resp.content)
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
-        for block in resp.content:
+        for block in content:
             btype = getattr(block, "type", None)
             if btype == "text":
-                text_parts.append(block.text)
+                text_parts.append(block.text or "")
             elif btype == "tool_use":
                 tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=dict(block.input)))
 
@@ -150,22 +185,31 @@ class AnthropicAdapter(LLMClient):
             input_tokens=getattr(resp.usage, "input_tokens", 0),
             output_tokens=getattr(resp.usage, "output_tokens", 0),
         )
+        served = getattr(resp, "model", None) or self._model  # fallback 接手時是接手的模型
         log.info(
             "LLM anthropic model=%s in=%d out=%d latency=%.2fs stop=%s tools=%d",
-            self._model,
+            served,
             usage.input_tokens,
             usage.output_tokens,
             latency,
             resp.stop_reason,
             len(tool_calls),
         )
+        if resp.stop_reason == "refusal":
+            # 連 fallback 都拒（或該類別不重跑）：丟掉可能的半截輸出，回固定說明；不帶 raw，
+            # 歷史只留這段說明文字，續接時不會回填被中斷的內容。
+            category = getattr(getattr(resp, "stop_details", None), "category", None)
+            log.warning("LLM 拒答 model=%s category=%s", served, category)
+            return LLMResponse(
+                text=REFUSAL_NOTICE, tool_calls=[], usage=usage, stop_reason="refusal", model=served, raw_assistant=None
+            )
         return LLMResponse(
             text="".join(text_parts) or None,
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=resp.stop_reason or "",
-            model=self._model,
-            raw_assistant=resp.content,  # 原樣回填（含 thinking 區塊）
+            model=served,
+            raw_assistant=content,  # 原樣回填（含 thinking 區塊；fallback 時已清掉被中斷的部分）
         )
 
     async def _send(self, params: dict[str, Any], on_text: TextStreamHandler | None) -> Any:
