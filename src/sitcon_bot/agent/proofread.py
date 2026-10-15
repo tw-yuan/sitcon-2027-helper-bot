@@ -2,12 +2,14 @@
 
 system prompt 沿用小石原本的 prompt（lean：扣掉 label／狀態白名單與名冊），最後附上校對任務說明；
 不帶工具、不串流、不留 reply-chain 脈絡。
-LLM 被要求在沒錯時只輸出 PASS；任何無法解讀的輸出都當作「不糾正」——寧可漏抓，不可誤鬧。
+LLM 被要求在沒錯時只輸出 PASS、有錯時以 FIX： 開頭；只有 FIX： 開頭的輸出才會送出，
+其餘（PASS、「沒有錯誤」之類的確認、無法解讀的內容）一律不回——寧可漏抓，不可誤鬧。
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 
 from ..domain.proofread import CHECK_SITCON, CHECK_ZAI
@@ -17,6 +19,12 @@ from .prompts import PromptBuilder
 log = logging.getLogger(__name__)
 
 PASS = "PASS"
+FIX = "FIX"
+_FIX_RE = re.compile(r"^FIX\s*[:：]\s*", re.IGNORECASE)
+# 模型偶爾在 FIX 後面寫「沒有錯誤」之類的確認；這種不是糾正，丟掉
+_NO_ERROR_RE = re.compile(
+    r"沒有錯|沒錯|無誤|沒有問題|沒問題|都正確|用法正確|用得正確|用得對|寫得正確|是正確的|不用改|不需要?修?改"
+)
 MAX_REPLY_CHARS = 300  # 糾正只該是一兩句；過長代表模型離題，直接丟棄
 
 # 糾錯處理器：吃 (訊息文字, 檢查項目, chat_id) 回傳糾正文字或 None（不回）。
@@ -30,10 +38,12 @@ _BASE = """【本輪任務：校對】這不是有人在呼叫你，而是你在
 檢查項目：
 {checks}
 
-輸出規則：
-- 列出的項目都沒有錯 → 只輸出 {pass_word}，不要加任何其他字。
-- 有錯 → 用台灣正體中文輸出一則簡短糾正（一兩句），指出原文錯處與正確寫法（例如「「再」→「在」」），
-  可以帶一點輕鬆的語氣但不要說教、不要加客服式收尾；純文字，不要 markdown。
+輸出規則（嚴格遵守）：
+- 列出的項目都沒有錯 → 整則輸出只有 {pass_word} 四個字母。禁止說明、禁止說「沒有錯誤」「用法正確」，
+  也不要確認或稱讚原文——沒錯時群組裡不能出現任何訊息。
+- 確定有錯 → 以「{fix_word}：」開頭，接著用台灣正體中文寫一則簡短糾正（一兩句），
+  指出原文錯處與正確寫法（例如「{fix_word}：「再」→「在」」），可以帶一點輕鬆的語氣但不要說教、
+  不要加客服式收尾；純文字，不要 markdown。
 - 拿不準就當沒錯，輸出 {pass_word}。"""
 
 _CHECK_TEXT = {
@@ -51,13 +61,16 @@ _CHECK_TEXT = {
 
 def build_system(checks: frozenset[str]) -> str:
     lines = "\n".join(_CHECK_TEXT[c] for c in sorted(checks) if c in _CHECK_TEXT)
-    return _BASE.format(checks=lines, pass_word=PASS)
+    return _BASE.format(checks=lines, pass_word=PASS, fix_word=FIX)
 
 
 def parse_reply(text: str | None) -> str | None:
-    """LLM 輸出 → 糾正文字；PASS、空白、過長或無法解讀一律回 None。"""
-    reply = (text or "").strip()
-    if not reply or reply.upper().startswith(PASS) or len(reply) > MAX_REPLY_CHARS:
+    """LLM 輸出 → 糾正文字；只有 FIX： 開頭且不是「沒錯」的確認才算，其餘一律回 None。"""
+    m = _FIX_RE.match((text or "").strip())
+    if not m:
+        return None
+    reply = (text or "").strip()[m.end() :].strip()
+    if not reply or len(reply) > MAX_REPLY_CHARS or _NO_ERROR_RE.search(reply):
         return None
     return reply
 

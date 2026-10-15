@@ -78,13 +78,33 @@ def test_route_proofread_only_authorized() -> None:
     assert route(is_authorized=False, **kw) is Action.IGNORE
 
 
-@pytest.mark.parametrize("text", [None, "", "  ", "PASS", "pass", "PASS。沒問題", "x" * 400])
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "  ",
+        "PASS",
+        "pass",
+        "PASS。沒問題",
+        "FIX：" + "x" * 400,
+        # 沒有 FIX 前綴的任何輸出都不送（包括模型自作主張的「確認正確」）
+        "「再」→「在」",
+        "這則訊息的「在」用法正確，沒有需要糾正的地方。",
+        "沒有錯誤",
+        # 有 FIX 前綴但內容其實是在說沒錯
+        "FIX：沒有錯誤",
+        "FIX：「在」用得正確",
+        "FIX：",
+    ],
+)
 def test_parse_reply_silent(text: str | None) -> None:
     assert parse_reply(text) is None
 
 
 def test_parse_reply_correction() -> None:
-    assert parse_reply("  「再」→「在」：我在會議室  ") == "「再」→「在」：我在會議室"
+    assert parse_reply("  FIX：「再」→「在」：我在會議室  ") == "「再」→「在」：我在會議室"
+    assert parse_reply("fix: SITCON 要全大寫喔") == "SITCON 要全大寫喔"
 
 
 def test_build_system_only_requested_checks() -> None:
@@ -116,7 +136,7 @@ def _pr(llm: _FakeLLM) -> Proofreader:
 
 
 async def test_proofreader_returns_correction() -> None:
-    llm = _FakeLLM("「再」→「在」")
+    llm = _FakeLLM("FIX：「再」→「在」")
     got = await _pr(llm)("我再會議室", frozenset({CHECK_ZAI}), 123)
     assert got == "「再」→「在」"
     system, messages, tools, thinking = llm.calls[0]
