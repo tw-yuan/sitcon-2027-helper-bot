@@ -143,6 +143,8 @@ class Settings(BaseSettings):
     # 授權群組的一般訊息命中預篩時，以無工具 LLM 單次判斷，需要糾正才回覆，沒錯完全不出聲。
     proofread_sitcon: bool = True  # 非全大寫的 sitcon（網址／帳號／識別字除外）
     proofread_zai: bool = True  # 含「在」「再」→ 判斷是否混用
+    # 在再糾錯只對這些 Telegram user id 觸發（逗號分隔）；留空＝所有人。預設只抓 Yoru（@yorukot）。
+    proofread_zai_user_ids: str = "6130607444"
     proofread_thinking: ThinkingLevel = "off"  # 觸發量大，預設不開 thinking 省成本與延遲
 
     # --- 其他 ---
@@ -183,6 +185,11 @@ class Settings(BaseSettings):
     def milestone_always_team_list(self) -> list[str]:
         """不論訂閱哪幾組都會收到的組別（逗號分隔）。"""
         return [s.strip() for s in self.milestone_always_teams.split(",") if s.strip()]
+
+    @property
+    def proofread_zai_user_id_set(self) -> frozenset[int]:
+        """在再糾錯的對象；空集合代表不限對象。"""
+        return frozenset(int(s) for s in self.proofread_zai_user_ids.replace(" ", "").split(",") if s)
 
     @field_validator("log_level")
     @classmethod
@@ -245,7 +252,8 @@ class Settings(BaseSettings):
                 else "停用（WEB_SEARCH_API_KEY 未設定）"
             ),
             f"  糾錯          : sitcon={'開' if self.proofread_sitcon else '關'} "
-            f"在再={'開' if self.proofread_zai else '關'} thinking={self.proofread_thinking}",
+            f"在再={'開' if self.proofread_zai else '關'}"
+            f"（對象：{self.proofread_zai_user_ids or '所有人'}） thinking={self.proofread_thinking}",
             f"  日誌等級       : {self.log_level}",
             "─────────────────────────────",
         ]

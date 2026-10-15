@@ -400,7 +400,11 @@ class Gateway:
         """糾錯預篩；僅群組、非轉傳訊息，且有設定糾錯器時才檢查（純本機字串比對）。"""
         if self._proofreader is None or str(message.chat.type) == "private" or message.forward_origin:
             return frozenset()
-        return proofread_targets(text, sitcon=self._settings.proofread_sitcon, zai=self._settings.proofread_zai)
+        zai = self._settings.proofread_zai
+        targets = self._settings.proofread_zai_user_id_set
+        if zai and targets:
+            zai = message.from_user is not None and message.from_user.id in targets
+        return proofread_targets(text, sitcon=self._settings.proofread_sitcon, zai=zai)
 
     async def _handle_proofread(self, message: Message, text: str) -> None:
         """糾錯：LLM 判定有錯才回一則糾正；沒錯不回、不加 reaction、不留稽核。"""

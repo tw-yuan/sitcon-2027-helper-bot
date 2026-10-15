@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from sitcon_bot.agent.prompts import PromptBuilder, PromptData
 from sitcon_bot.agent.proofread import Proofreader, build_system, parse_reply
 from sitcon_bot.domain.proofread import CHECK_SITCON, CHECK_ZAI, lowercase_sitcon, proofread_targets
 from sitcon_bot.services.llm.base import LLMResponse, Usage
+from sitcon_bot.telegram.gateway import Gateway
 from sitcon_bot.telegram.routing import Action, Kind, classify_trigger, route
 
 
@@ -128,3 +131,37 @@ async def test_proofreader_pass_and_errors_are_silent() -> None:
     assert await _pr(_FakeLLM("PASS"))("我在會議室", frozenset({CHECK_ZAI})) is None
     assert await _pr(_FakeLLM(exc=RuntimeError("down")))("我在會議室", frozenset({CHECK_ZAI})) is None
     assert await _pr(_FakeLLM("x"))("hi", frozenset()) is None
+
+
+def _gateway_checks(text: str, user_id: int | None, zai_user_ids: str) -> frozenset[str]:
+    gw = Gateway.__new__(Gateway)
+    gw._proofreader = object()  # type: ignore[assignment]
+    gw._settings = SimpleNamespace(  # type: ignore[assignment]
+        proofread_sitcon=True,
+        proofread_zai=True,
+        proofread_zai_user_id_set=frozenset(int(s) for s in zai_user_ids.split(",") if s),
+    )
+    message = SimpleNamespace(
+        chat=SimpleNamespace(type="supergroup"),
+        forward_origin=None,
+        from_user=None if user_id is None else SimpleNamespace(id=user_id),
+    )
+    return gw._proofread_checks(message, text)  # type: ignore[arg-type]
+
+
+def test_zai_only_for_listed_users() -> None:
+    assert _gateway_checks("我再會議室", 6130607444, "6130607444") == {CHECK_ZAI}
+    assert _gateway_checks("我再會議室", 1, "6130607444") == frozenset()
+    assert _gateway_checks("我再會議室", None, "6130607444") == frozenset()
+    # sitcon 大小寫不受對象限制
+    assert _gateway_checks("sitcon 在哪", 1, "6130607444") == {CHECK_SITCON}
+    # 留空＝所有人
+    assert _gateway_checks("我再會議室", 1, "") == {CHECK_ZAI}
+
+
+def test_zai_user_id_setting_parses() -> None:
+    from sitcon_bot.settings import Settings
+
+    assert Settings.model_construct(proofread_zai_user_ids=" 1, 2,").proofread_zai_user_id_set == {1, 2}
+    assert Settings.model_construct(proofread_zai_user_ids="").proofread_zai_user_id_set == frozenset()
+    assert 6130607444 in Settings.model_construct().proofread_zai_user_id_set
